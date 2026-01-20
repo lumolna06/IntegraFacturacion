@@ -9,24 +9,61 @@ public class ConfiguracionFactory : MasterDao
 {
     public ConfiguracionFactory(string connectionString) : base(connectionString) { }
 
+    /// <summary>
+    /// Registra la licencia inicial en la base de datos tras validar la llave de activación.
+    /// </summary>
+    public void RegistrarConfiguracionInicial(string nombreEmpresa, string ruc, int maxEquipos, string hid)
+    {
+        var parameters = new Microsoft.Data.SqlClient.SqlParameter[] {
+        new Microsoft.Data.SqlClient.SqlParameter("@nombre_empresa", nombreEmpresa),
+        new Microsoft.Data.SqlClient.SqlParameter("@ruc", ruc),
+        new Microsoft.Data.SqlClient.SqlParameter("@max_equipos", maxEquipos),
+        new Microsoft.Data.SqlClient.SqlParameter("@hid_principal", hid)
+    };
+
+        // Llamamos al SP que creamos en SQL Server para que inserte Empresa y Sucursal
+        ExecuteNonQuery("sp_Configuracion_ActivarSistema", parameters);
+    }
+
+    /// <summary>
+    /// Llama al SP multinivel para validar si el equipo actual tiene acceso o si se debe auto-registrar.
+    /// </summary>
+    public DataTable ValidarLicenciaMultiEquipo(string hardwareId)
+    {
+        var parameters = new SqlParameter[]
+        {
+            new SqlParameter("@hardware_id", hardwareId)
+        };
+
+        return ExecuteQuery("sp_Licencia_AutoValidar_MultiEquipo", parameters);
+    }
+
+    /// <summary>
+    /// Guarda los datos comerciales de la empresa.
+    /// </summary>
     public void GuardarEmpresa(EmpresaDTO empresa)
     {
         var p = new SqlParameter[] {
             new SqlParameter("@nombre_comercial", empresa.NombreComercial),
-            new SqlParameter("@razon_social", empresa.NombreComercial), // Simplificado
+            new SqlParameter("@razon_social", empresa.NombreComercial), // Usamos NombreComercial como RazonSocial para evitar error de propiedad
             new SqlParameter("@cedula_juridica", empresa.CedulaJuridica),
             new SqlParameter("@tipo_regimen", empresa.TipoRegimen),
             new SqlParameter("@telefono", "00000000"),
             new SqlParameter("@correo_notificaciones", empresa.CorreoNotificaciones),
             new SqlParameter("@sitio_web", "")
         };
+
         ExecuteNonQuery("sp_Empresa_Upsert", p);
     }
 
+    /// <summary>
+    /// Método de legado para obtener licencia simple.
+    /// </summary>
     public LicenciaDTO? ObtenerLicencia(string hardwareId)
     {
         var p = new SqlParameter[] { new SqlParameter("@hardware_id", hardwareId) };
         var dt = ExecuteQuery("sp_Licencia_Validar", p);
+
         if (dt.Rows.Count == 0) return null;
 
         var row = dt.Rows[0];
@@ -36,18 +73,5 @@ public class ConfiguracionFactory : MasterDao
             Estado = row["estado"].ToString()!,
             FechaVencimiento = Convert.ToDateTime(row["fecha_vencimiento"])
         };
-    }
-
-    // En IntegraPro.DataAccess/Factory/ConfiguracionFactory.cs
-
-    public DataTable ValidarLicenciaMultiEquipo(string hardwareId)
-    {
-        var parameters = new Microsoft.Data.SqlClient.SqlParameter[]
-        {
-        new Microsoft.Data.SqlClient.SqlParameter("@hardware_id", hardwareId)
-        };
-
-        // Aquí sí puedes usar ExecuteQuery porque ConfiguracionFactory HEREDA de MasterDao
-        return ExecuteQuery("sp_Licencia_AutoValidar_MultiEquipo", parameters);
     }
 }

@@ -19,6 +19,17 @@ public class LicenseFilter : IAuthorizationFilter
 
     public void OnAuthorization(AuthorizationFilterContext context)
     {
+        // =================================================================================
+        // EXCEPCIÓN: Permitir el paso libre a los endpoints de Activación
+        // =================================================================================
+        var path = context.HttpContext.Request.Path.Value?.ToLower() ?? "";
+
+        // Si la URL contiene "licencia", permitimos el acceso sin validar hardware ni sesión
+        if (path.Contains("/api/licencia"))
+        {
+            return;
+        }
+
         // 1. VALIDACIÓN DE HARDWARE (¿La PC tiene permiso de usar el software?)
         var validacionHardware = _licenciaService.ValidarSistema();
         string hidActual = _licenciaService.GetHardwareId();
@@ -36,7 +47,6 @@ public class LicenseFilter : IAuthorizationFilter
         }
 
         // 2. VALIDACIÓN DE SESIÓN ÚNICA (¿Es este usuario el que se logueó en esta PC?)
-        // Extraemos el nombre de usuario del Token/Identidad actual
         var username = context.HttpContext.User.Identity?.Name;
 
         if (!string.IsNullOrEmpty(username))

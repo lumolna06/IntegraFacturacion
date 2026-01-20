@@ -10,7 +10,6 @@ public class UsuarioService : IUsuarioService
     private readonly UsuarioFactory _factory;
     private readonly LicenciaService _licenciaService;
 
-    // Inyectamos LicenciaService para poder leer el Hardware ID durante el Login
     public UsuarioService(UsuarioFactory factory, LicenciaService licenciaService)
     {
         _factory = factory;
@@ -38,18 +37,23 @@ public class UsuarioService : IUsuarioService
             // 2. LÓGICA DE SESIÓN ÚNICA LIGADA AL HARDWARE
             string hidActual = _licenciaService.GetHardwareId();
 
-            // Si el usuario ya tiene una sesión activa en OTRA computadora...
             if (!string.IsNullOrEmpty(usuario.HardwareIdSesion) && usuario.HardwareIdSesion != hidActual)
             {
                 Logger.WriteLog("Seguridad", "Bloqueo Sesión", $"Usuario {username} intentó entrar desde otra PC.");
-                // Retornamos un mensaje clave para que el Frontend sepa que debe mostrar el botón de "Forzar Cierre"
                 return new ApiResponse<UsuarioDTO>(false, "SESION_ABIERTA_OTRO_EQUIPO");
             }
 
-            // 3. Registrar el Hardware ID en la sesión del usuario en la BD
+            // 3. Registrar el Hardware ID en la sesión
             _factory.ActualizarSesionHardware(usuario.Id, hidActual);
 
+            // 4. --- NUEVO: REGISTRAR FECHA Y HORA DEL ÚLTIMO LOGIN ---
+            _factory.RegistrarLogin(usuario.Id);
+
+            // Actualizamos el objeto en memoria para que la respuesta de la API no sea null
+            usuario.UltimoLogin = DateTime.Now;
+            usuario.HardwareIdSesion = hidActual;
             usuario.PasswordHash = string.Empty; // Seguridad: No devolver el hash
+
             Logger.WriteLog("Seguridad", "Login Exitoso", $"Usuario {username} ha ingresado en equipo {hidActual}.");
 
             return new ApiResponse<UsuarioDTO>(true, "Acceso concedido", usuario);
@@ -61,10 +65,6 @@ public class UsuarioService : IUsuarioService
         }
     }
 
-    /// <summary>
-    /// Libera la sesión de un usuario para que pueda entrar en cualquier otro equipo.
-    /// Valida las credenciales antes de proceder.
-    /// </summary>
     public ApiResponse<bool> ForzarCierreSesion(string username, string password)
     {
         try
@@ -87,7 +87,6 @@ public class UsuarioService : IUsuarioService
         }
     }
 
-    // Método para liberar la sesión (Logout normal)
     public ApiResponse<bool> Logout(int usuarioId)
     {
         try

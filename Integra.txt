@@ -6,13 +6,13 @@ using IntegraPro.AppLogic.Interfaces;
 using IntegraPro.AppLogic.Services;
 using IntegraPro.DataAccess.Factory;
 using Microsoft.OpenApi.Models;
+using IntegraPro.API.Filters; // Aseg�rate de que esta referencia coincida con tu carpeta de filtros
 
 var builder = WebApplication.CreateBuilder(args);
 
 // ==========================================
 // 1. CONFIGURACI�N DE CONEXI�N
 // ==========================================
-// Se prioriza la cadena de appsettings.json, si no existe usa la de respaldo.
 string connectionString = builder.Configuration.GetConnectionString("DefaultConnection")
     ?? "Server=DESKTOP-AR7JSQE\\SQLEXPRESS;Database=ERP_SistemaPro;Integrated Security=SSPI;TrustServerCertificate=True;";
 
@@ -21,23 +21,25 @@ string connectionString = builder.Configuration.GetConnectionString("DefaultConn
 // ==========================================
 
 // --- Capa de Datos (Factories) ---
-// Registramos las Factories pasando la cadena de conexi�n al constructor
 builder.Services.AddScoped(sp => new UsuarioFactory(connectionString));
 builder.Services.AddScoped(sp => new ProductoFactory(connectionString));
 builder.Services.AddScoped(sp => new CategoriaFactory(connectionString));
-builder.Services.AddScoped(sp => new ConfiguracionFactory(connectionString)); // Nueva Factory Zona 1
+builder.Services.AddScoped(sp => new ConfiguracionFactory(connectionString));
 
 // --- Capa de L�gica (Services) ---
-// Registramos los servicios vincul�ndolos con sus interfaces
+builder.Services.AddScoped<LicenciaService>();
 builder.Services.AddScoped<IUsuarioService, UsuarioService>();
 builder.Services.AddScoped<IProductoService, ProductoService>();
-builder.Services.AddScoped<LicenciaService>(); // Servicio de Validaci�n de Licencia y Hardware
-// builder.Services.AddScoped<ICategoriaService, CategoriaService>(); 
 
 // ==========================================
 // 3. SERVICIOS BASE DE LA API
 // ==========================================
-builder.Services.AddControllers();
+// Se activa la validaci�n de licencia y sesi�n autom�tica en TODO el sistema
+builder.Services.AddControllers(options =>
+{
+    options.Filters.Add<LicenseFilter>();
+});
+
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen(c =>
 {
@@ -45,7 +47,7 @@ builder.Services.AddSwaggerGen(c =>
     {
         Title = "IntegraPro ERP - Sistema de Gesti�n General",
         Version = "v1",
-        Description = "API para gesti�n de inventarios, recetas de producci�n, facturaci�n y licenciamiento."
+        Description = "API para gesti�n de inventarios, facturaci�n y licenciamiento con control de hardware."
     });
 });
 
@@ -55,7 +57,6 @@ var app = builder.Build();
 // 4. PIPELINE DE SOLICITUDES (Middlewares)
 // ==========================================
 
-// Configuraci�n para el entorno de desarrollo
 if (app.Environment.IsDevelopment())
 {
     app.UseSwagger();
@@ -67,8 +68,10 @@ if (app.Environment.IsDevelopment())
 
 app.UseHttpsRedirection();
 
-// Importante para que los Controladores funcionen
+// Importante: El orden de estos middlewares es vital
+app.UseAuthentication();
 app.UseAuthorization();
+
 app.MapControllers();
 
 app.Run();
@@ -117,6 +120,241 @@ public class AuthController : ControllerBase
 
 public record LoginRequest(string Username, string Password);.
  
+--- RUTA: C:\Users\Luis\source\repos\Integra\IntegraPro\IntegraPro.API\Controllers\LicenciaController.cs --- 
+--- NOMBRE: LicenciaController.cs --- 
+ 
+﻿using IntegraPro.AppLogic.Services;
+using IntegraPro.AppLogic.Utils;
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Mvc;
+
+namespace IntegraPro.WebAPI.Controllers;
+
+[ApiController]
+[Route("api/[controller]")]
+public class LicenciaController : ControllerBase
+{
+    private readonly LicenciaService _service;
+
+    public LicenciaController(LicenciaService service)
+    {
+        _service = service;
+    }
+
+    /// <summary>
+    /// Paso 1: Obtener el Identificador de Hardware.
+    /// Accesible sin licencia para permitir el inicio del proceso.
+    /// </summary>
+    [AllowAnonymous]
+    [HttpGet("mi-hardware-id")]
+    public IActionResult GetHardwareId()
+    {
+        string hid = _service.GetHardwareId();
+        return Ok(new { hardwareId = hid });
+    }
+
+    /// <summary>
+    /// Paso 2 (Manual): Activación mediante una llave generada por el administrador.
+    /// </summary>
+    [AllowAnonymous]
+    [HttpPost("activar")]
+    public IActionResult Activar([FromQuery] string llave, [FromQuery] string empresa, [FromQuery] string ruc, [FromQuery] int maxEquipos)
+    {
+        var response = _service.ActivarLicencia(llave, empresa, ruc, maxEquipos);
+        return Ok(response);
+    }
+
+    /// <summary>
+    /// Paso 2 (Automático): El sistema se activa solo con datos básicos.
+    /// Genera la llave internamente para que el usuario no dependa del administrador inicialmente.
+    /// </summary>
+    [AllowAnonymous]
+    [HttpPost("auto-activar")]
+    public IActionResult AutoActivar([FromQuery] string empresa, [FromQuery] string ruc)
+    {
+        try
+        {
+            string hid = _service.GetHardwareId();
+            // Generamos la llave automáticamente para una licencia estándar de 5 equipos
+            int equiposGratis = 5;
+            string llaveGenerada = _service.GenerarLlave(ruc, hid, equiposGratis);
+
+            var response = _service.ActivarLicencia(llaveGenerada, empresa, ruc, equiposGratis);
+            return Ok(response);
+        }
+        catch (Exception ex)
+        {
+            return BadRequest(new ApiResponse<bool>(false, $"Error en auto-activación: {ex.Message}"));
+        }
+    }
+
+    /// <summary>
+    /// Verifica si el sistema está activo y si el RUC no ha sido bloqueado remotamente.
+    /// </summary>
+    [HttpGet("validar-estado")]
+    public IActionResult Validar()
+    {
+        var response = _service.ValidarSistema();
+        // Si el RUC está en tu lista de GitHub, ValidarSistema() devolverá false.
+        return response.Result ? Ok(response) : StatusCode(403, response);
+    }
+}.
+ 
+--- RUTA: C:\Users\Luis\source\repos\Integra\IntegraPro\IntegraPro.API\Controllers\UsuarioController.cs --- 
+--- NOMBRE: UsuarioController.cs --- 
+ 
+﻿using IntegraPro.AppLogic.Interfaces;
+using IntegraPro.AppLogic.Utils;
+using IntegraPro.DTO.Models;
+using Microsoft.AspNetCore.Mvc;
+
+namespace IntegraPro.API.Controllers;
+
+[ApiController]
+[Route("api/[controller]")]
+public class UsuarioController : ControllerBase
+{
+    private readonly IUsuarioService _usuarioService;
+
+    public UsuarioController(IUsuarioService usuarioService)
+    {
+        _usuarioService = usuarioService;
+    }
+
+    [HttpPost("login")]
+    public ActionResult<ApiResponse<UsuarioDTO>> Login([FromBody] LoginRequest request)
+    {
+        var result = _usuarioService.Login(request.Username, request.Password);
+
+        // Cambiado de .Success a .Result
+        if (result.Result)
+        {
+            return Ok(result);
+        }
+
+        if (result.Message == "SESION_ABIERTA_OTRO_EQUIPO")
+        {
+            return Conflict(result);
+        }
+
+        return BadRequest(result);
+    }
+
+    [HttpPost("forzar-cierre-sesion")]
+    public ActionResult<ApiResponse<bool>> ForzarCierre([FromBody] LoginRequest request)
+    {
+        var result = _usuarioService.ForzarCierreSesion(request.Username, request.Password);
+
+        if (result.Result) // Cambiado a .Result
+        {
+            return Ok(result);
+        }
+
+        return BadRequest(result);
+    }
+
+    [HttpPost("registrar")]
+    public ActionResult<ApiResponse<bool>> Registrar([FromBody] UsuarioDTO usuario)
+    {
+        var result = _usuarioService.Registrar(usuario);
+
+        if (result.Result) // Cambiado a .Result
+        {
+            return Ok(result);
+        }
+
+        return BadRequest(result);
+    }
+
+    [HttpPost("logout/{id}")]
+    public ActionResult<ApiResponse<bool>> Logout(int id)
+    {
+        var result = _usuarioService.Logout(id);
+
+        if (result.Result) // Cambiado a .Result
+        {
+            return Ok(result);
+        }
+
+        return BadRequest(result);
+    }
+}.
+ 
+--- RUTA: C:\Users\Luis\source\repos\Integra\IntegraPro\IntegraPro.API\Filters\LicenseFilter.cs --- 
+--- NOMBRE: LicenseFilter.cs --- 
+ 
+﻿using IntegraPro.AppLogic.Services;
+using IntegraPro.DataAccess.Factory;
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Mvc.Filters;
+using System.Security.Claims;
+
+namespace IntegraPro.API.Filters;
+
+public class LicenseFilter : IAuthorizationFilter
+{
+    private readonly LicenciaService _licenciaService;
+    private readonly UsuarioFactory _usuarioFactory;
+
+    public LicenseFilter(LicenciaService licenciaService, UsuarioFactory usuarioFactory)
+    {
+        _licenciaService = licenciaService;
+        _usuarioFactory = usuarioFactory;
+    }
+
+    public void OnAuthorization(AuthorizationFilterContext context)
+    {
+        // =================================================================================
+        // EXCEPCIÓN: Permitir el paso libre a los endpoints de Activación
+        // =================================================================================
+        var path = context.HttpContext.Request.Path.Value?.ToLower() ?? "";
+
+        // Si la URL contiene "licencia", permitimos el acceso sin validar hardware ni sesión
+        if (path.Contains("/api/licencia"))
+        {
+            return;
+        }
+
+        // 1. VALIDACIÓN DE HARDWARE (¿La PC tiene permiso de usar el software?)
+        var validacionHardware = _licenciaService.ValidarSistema();
+        string hidActual = _licenciaService.GetHardwareId();
+
+        if (!validacionHardware.Result)
+        {
+            context.Result = new ObjectResult(new
+            {
+                Result = false,
+                Message = "EQUIPO_NO_AUTORIZADO",
+                Details = "Esta computadora no cuenta con una licencia activa."
+            })
+            { StatusCode = 403 };
+            return;
+        }
+
+        // 2. VALIDACIÓN DE SESIÓN ÚNICA (¿Es este usuario el que se logueó en esta PC?)
+        var username = context.HttpContext.User.Identity?.Name;
+
+        if (!string.IsNullOrEmpty(username))
+        {
+            var usuario = _usuarioFactory.GetByUsername(username);
+
+            if (usuario != null && !string.IsNullOrEmpty(usuario.HardwareIdSesion))
+            {
+                if (usuario.HardwareIdSesion != hidActual)
+                {
+                    context.Result = new ObjectResult(new
+                    {
+                        Result = false,
+                        Message = "SESION_INVALIDA_OTRO_EQUIPO",
+                        Details = "Tu sesión ha sido abierta en otra computadora. Se ha cerrado el acceso aquí."
+                    })
+                    { StatusCode = 401 };
+                }
+            }
+        }
+    }
+}.
+ 
 --- RUTA: C:\Users\Luis\source\repos\Integra\IntegraPro\IntegraPro.API\obj\Debug\net9.0\.NETCoreApp,Version=v9.0.AssemblyAttributes.cs --- 
 --- NOMBRE: .NETCoreApp,Version=v9.0.AssemblyAttributes.cs --- 
  
@@ -145,7 +383,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("IntegraPro.API")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+fc3d0a092d39c0a95b12dc0dfec5f0046b936a05")]
 [assembly: System.Reflection.AssemblyProductAttribute("IntegraPro.API")]
 [assembly: System.Reflection.AssemblyTitleAttribute("IntegraPro.API")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
@@ -230,8 +468,8 @@ public interface IProductoService
 --- RUTA: C:\Users\Luis\source\repos\Integra\IntegraPro\IntegraPro.AppLogic\Interfaces\IUsuarioService.cs --- 
 --- NOMBRE: IUsuarioService.cs --- 
  
-﻿using IntegraPro.AppLogic.Utils;
-using IntegraPro.DTO.Models;
+﻿using IntegraPro.DTO.Models;
+using IntegraPro.AppLogic.Utils;
 
 namespace IntegraPro.AppLogic.Interfaces;
 
@@ -239,8 +477,11 @@ public interface IUsuarioService
 {
     ApiResponse<UsuarioDTO> Login(string username, string password);
     ApiResponse<bool> Registrar(UsuarioDTO usuario);
-}
-.
+
+    // Añadimos los métodos que faltaban
+    ApiResponse<bool> Logout(int usuarioId);
+    ApiResponse<bool> ForzarCierreSesion(string username, string password);
+}.
  
 --- RUTA: C:\Users\Luis\source\repos\Integra\IntegraPro\IntegraPro.AppLogic\obj\Debug\net9.0\.NETCoreApp,Version=v9.0.AssemblyAttributes.cs --- 
 --- NOMBRE: .NETCoreApp,Version=v9.0.AssemblyAttributes.cs --- 
@@ -270,7 +511,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("IntegraPro.AppLogic")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+fc3d0a092d39c0a95b12dc0dfec5f0046b936a05")]
 [assembly: System.Reflection.AssemblyProductAttribute("IntegraPro.AppLogic")]
 [assembly: System.Reflection.AssemblyTitleAttribute("IntegraPro.AppLogic")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
@@ -298,7 +539,11 @@ global using global::System.Threading.Tasks;
 ﻿using IntegraPro.AppLogic.Utils;
 using IntegraPro.DataAccess.Factory;
 using IntegraPro.DTO.Models;
-using System.Management; // Necesitas agregar System.Management vía NuGet
+using System.Management;
+using Microsoft.Data.SqlClient;
+using System.Data;
+using System.Security.Cryptography;
+using System.Text;
 
 namespace IntegraPro.AppLogic.Services;
 
@@ -306,36 +551,173 @@ public class LicenciaService
 {
     private readonly ConfiguracionFactory _factory;
 
+    // Esta llave debe ser la misma en tu generador de licencias privado
+    private readonly string _masterKey = "IntegraPro_Secret_2026";
+
+    // URL para bloquear clientes morosos o licencias robadas (formato: lista de RUCs separados por comas o lineas)
+    private readonly string _killSwitchUrl = "https://tu-servidor-remoto.com/blacklist.txt";
+
     public LicenciaService(ConfiguracionFactory factory)
     {
         _factory = factory;
     }
 
+    /// <summary>
+    /// Activa el sistema por primera vez vinculándolo al Hardware ID principal.
+    /// </summary>
+    public ApiResponse<bool> ActivarLicencia(string llaveActivacion, string nombreEmpresa, string ruc, int maxEquipos)
+    {
+        try
+        {
+            string hidActual = GetHardwareId();
+            string llaveEsperada = GenerarLlave(ruc, hidActual, maxEquipos);
+
+            if (llaveActivacion != llaveEsperada)
+            {
+                return new ApiResponse<bool>(false, "La llave de activación es inválida para este equipo o los datos no coinciden.");
+            }
+
+            _factory.RegistrarConfiguracionInicial(nombreEmpresa, ruc, maxEquipos, hidActual);
+
+            return new ApiResponse<bool>(true, "¡Sistema activado con éxito!", true);
+        }
+        catch (Exception ex)
+        {
+            return new ApiResponse<bool>(false, $"Error al activar: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Algoritmo de generación de llaves (debe ser idéntico en tu generador externo)
+    /// </summary>
+    public string GenerarLlave(string ruc, string hid, int maxEquipos)
+    {
+        using (var sha = SHA256.Create())
+        {
+            // El formato es RUC-HID-MAX-KEY
+            string rawData = $"{ruc.Trim()}-{hid.Trim()}-{maxEquipos}-{_masterKey}";
+            byte[] bytes = sha.ComputeHash(Encoding.UTF8.GetBytes(rawData));
+
+            // Retornamos un código corto de 16 caracteres para facilidad del usuario
+            return Convert.ToBase64String(bytes)
+                .Replace("+", "")
+                .Replace("/", "")
+                .Replace("=", "")
+                .Substring(0, 16)
+                .ToUpper();
+        }
+    }
+
+    /// <summary>
+    /// Valida si el equipo actual tiene permiso de ejecución.
+    /// </summary>
+    public ApiResponse<bool> ValidarSistema()
+    {
+        try
+        {
+            string hid = GetHardwareId();
+            DataTable dt = _factory.ValidarLicenciaMultiEquipo(hid);
+
+            if (dt != null && dt.Rows.Count > 0)
+            {
+                string resultado = dt.Rows[0]["Resultado"]?.ToString() ?? "";
+                string rucRegistrado = dt.Rows[0]["Ruc"]?.ToString() ?? "";
+
+                if (resultado == "EQUIPO_AUTORIZADO" || resultado == "NUEVO_EQUIPO_REGISTRADO")
+                {
+                    // Validación de seguridad adicional (Remota)
+                    if (!string.IsNullOrEmpty(rucRegistrado))
+                    {
+                        if (EstaEnListaNegra(rucRegistrado))
+                        {
+                            return new ApiResponse<bool>(false, "Licencia revocada: Por favor contacte al soporte técnico.");
+                        }
+                    }
+
+                    return new ApiResponse<bool>(true, $"Acceso concedido", true);
+                }
+
+                if (resultado == "LIMITE_ALCANZADO")
+                {
+                    return new ApiResponse<bool>(false, "Se ha alcanzado el límite de equipos permitidos para esta licencia.");
+                }
+            }
+
+            return new ApiResponse<bool>(false, "Sistema no activado o hardware no reconocido.");
+        }
+        catch (Exception ex)
+        {
+            return new ApiResponse<bool>(false, $"Error crítico de seguridad: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Obtiene el Identificador único de Hardware (HID)
+    /// </summary>
     public string GetHardwareId()
     {
-        // Obtenemos el Serial de la BIOS como ID único
         string serial = "";
         try
         {
-            ManagementObjectSearcher searcher = new ManagementObjectSearcher("SELECT SerialNumber FROM Win32_BIOS");
-            foreach (ManagementObject obj in searcher.Get())
-            {
-                serial = obj["SerialNumber"].ToString()!;
-            }
+            // Intentar con Serial de la Placa Base (Motherboard)
+            serial = GetWmiProperty("Win32_BaseBoard", "SerialNumber");
+
+            // Fallback 1: BIOS
+            if (EsInvalido(serial)) serial = GetWmiProperty("Win32_BIOS", "SerialNumber");
+
+            // Fallback 2: ID del Procesador
+            if (EsInvalido(serial)) serial = GetWmiProperty("Win32_Processor", "ProcessorId");
+
+            // Fallback Final: Nombre de la máquina (Menos seguro pero funcional)
+            if (EsInvalido(serial)) serial = $"PC-{Environment.MachineName.ToUpper()}";
         }
-        catch { serial = "HARDWARE-ID-GENERICO"; }
-        return serial;
+        catch
+        {
+            serial = $"FB-{Environment.MachineName.ToUpper()}";
+        }
+        return serial.Trim();
     }
 
-    public ApiResponse<bool> ValidarSistema()
+    private bool EstaEnListaNegra(string ruc)
     {
-        string hid = GetHardwareId();
-        var licencia = _factory.ObtenerLicencia(hid);
+        try
+        {
+            using (var client = new HttpClient())
+            {
+                client.Timeout = TimeSpan.FromSeconds(2); // No bloqueamos al usuario si no hay internet
+                var response = client.GetStringAsync(_killSwitchUrl).Result;
+                return response.Contains(ruc);
+            }
+        }
+        catch
+        {
+            return false; // Si falla el internet, permitimos seguir trabajando localmente
+        }
+    }
 
-        if (licencia == null)
-            return new ApiResponse<bool>(false, "Sistema no registrado o Licencia inválida para este equipo.");
+    private string GetWmiProperty(string table, string property)
+    {
+        try
+        {
+            // Nota: Requiere NuGet System.Management
+            using (ManagementObjectSearcher searcher = new ManagementObjectSearcher($"SELECT {property} FROM {table}"))
+            {
+                foreach (ManagementObject obj in searcher.Get())
+                {
+                    return obj[property]?.ToString()?.Trim() ?? "";
+                }
+            }
+        }
+        catch { }
+        return "";
+    }
 
-        return new ApiResponse<bool>(true, "Licencia Activa", true);
+    private bool EsInvalido(string sid)
+    {
+        if (string.IsNullOrWhiteSpace(sid)) return true;
+        string val = sid.ToLower();
+        return val == "default string" || val == "none" || val == "to be filled by o.e.m." ||
+               val == "00000000" || val == "unknown" || val.Length < 5;
     }
 }.
  
@@ -464,10 +846,12 @@ namespace IntegraPro.AppLogic.Services;
 public class UsuarioService : IUsuarioService
 {
     private readonly UsuarioFactory _factory;
+    private readonly LicenciaService _licenciaService;
 
-    public UsuarioService(UsuarioFactory factory)
+    public UsuarioService(UsuarioFactory factory, LicenciaService licenciaService)
     {
         _factory = factory;
+        _licenciaService = licenciaService;
     }
 
     public ApiResponse<UsuarioDTO> Login(string username, string password)
@@ -481,20 +865,77 @@ public class UsuarioService : IUsuarioService
             if (usuario == null || !usuario.Activo)
                 return new ApiResponse<UsuarioDTO>(false, "Credenciales incorrectas o usuario inactivo");
 
+            // 1. Verificar contraseña
             if (!PasswordHasher.VerifyPassword(password, usuario.PasswordHash))
             {
                 Logger.WriteLog("Seguridad", "Login Fallido", $"Intento fallido: {username}");
                 return new ApiResponse<UsuarioDTO>(false, "Credenciales incorrectas");
             }
 
+            // 2. LÓGICA DE SESIÓN ÚNICA LIGADA AL HARDWARE
+            string hidActual = _licenciaService.GetHardwareId();
+
+            if (!string.IsNullOrEmpty(usuario.HardwareIdSesion) && usuario.HardwareIdSesion != hidActual)
+            {
+                Logger.WriteLog("Seguridad", "Bloqueo Sesión", $"Usuario {username} intentó entrar desde otra PC.");
+                return new ApiResponse<UsuarioDTO>(false, "SESION_ABIERTA_OTRO_EQUIPO");
+            }
+
+            // 3. Registrar el Hardware ID en la sesión
+            _factory.ActualizarSesionHardware(usuario.Id, hidActual);
+
+            // 4. --- NUEVO: REGISTRAR FECHA Y HORA DEL ÚLTIMO LOGIN ---
+            _factory.RegistrarLogin(usuario.Id);
+
+            // Actualizamos el objeto en memoria para que la respuesta de la API no sea null
+            usuario.UltimoLogin = DateTime.Now;
+            usuario.HardwareIdSesion = hidActual;
             usuario.PasswordHash = string.Empty; // Seguridad: No devolver el hash
-            Logger.WriteLog("Seguridad", "Login Exitoso", $"Usuario {username} ha ingresado.");
+
+            Logger.WriteLog("Seguridad", "Login Exitoso", $"Usuario {username} ha ingresado en equipo {hidActual}.");
+
             return new ApiResponse<UsuarioDTO>(true, "Acceso concedido", usuario);
         }
         catch (Exception ex)
         {
             Logger.WriteLog("Error", "Login", ex.Message);
             return new ApiResponse<UsuarioDTO>(false, $"Error interno: {ex.Message}");
+        }
+    }
+
+    public ApiResponse<bool> ForzarCierreSesion(string username, string password)
+    {
+        try
+        {
+            var usuario = _factory.GetByUsername(username);
+
+            if (usuario != null && PasswordHasher.VerifyPassword(password, usuario.PasswordHash))
+            {
+                _factory.ActualizarSesionHardware(usuario.Id, null);
+                Logger.WriteLog("Seguridad", "Forzar Cierre", $"Sesiones liberadas para el usuario: {username}");
+                return new ApiResponse<bool>(true, "Sesiones liberadas. Ya puede reintentar el login.", true);
+            }
+
+            return new ApiResponse<bool>(false, "Credenciales inválidas para realizar esta acción.");
+        }
+        catch (Exception ex)
+        {
+            Logger.WriteLog("Error", "ForzarCierre", ex.Message);
+            return new ApiResponse<bool>(false, $"Error al forzar cierre: {ex.Message}");
+        }
+    }
+
+    public ApiResponse<bool> Logout(int usuarioId)
+    {
+        try
+        {
+            _factory.ActualizarSesionHardware(usuarioId, null);
+            return new ApiResponse<bool>(true, "Sesión cerrada correctamente", true);
+        }
+        catch (Exception ex)
+        {
+            Logger.WriteLog("Error", "Logout", ex.Message);
+            return new ApiResponse<bool>(false, $"Error al cerrar sesión: {ex.Message}");
         }
     }
 
@@ -757,24 +1198,61 @@ public class ConfiguracionFactory : MasterDao
 {
     public ConfiguracionFactory(string connectionString) : base(connectionString) { }
 
+    /// <summary>
+    /// Registra la licencia inicial en la base de datos tras validar la llave de activación.
+    /// </summary>
+    public void RegistrarConfiguracionInicial(string nombreEmpresa, string ruc, int maxEquipos, string hid)
+    {
+        var parameters = new Microsoft.Data.SqlClient.SqlParameter[] {
+        new Microsoft.Data.SqlClient.SqlParameter("@nombre_empresa", nombreEmpresa),
+        new Microsoft.Data.SqlClient.SqlParameter("@ruc", ruc),
+        new Microsoft.Data.SqlClient.SqlParameter("@max_equipos", maxEquipos),
+        new Microsoft.Data.SqlClient.SqlParameter("@hid_principal", hid)
+    };
+
+        // Llamamos al SP que creamos en SQL Server para que inserte Empresa y Sucursal
+        ExecuteNonQuery("sp_Configuracion_ActivarSistema", parameters);
+    }
+
+    /// <summary>
+    /// Llama al SP multinivel para validar si el equipo actual tiene acceso o si se debe auto-registrar.
+    /// </summary>
+    public DataTable ValidarLicenciaMultiEquipo(string hardwareId)
+    {
+        var parameters = new SqlParameter[]
+        {
+            new SqlParameter("@hardware_id", hardwareId)
+        };
+
+        return ExecuteQuery("sp_Licencia_AutoValidar_MultiEquipo", parameters);
+    }
+
+    /// <summary>
+    /// Guarda los datos comerciales de la empresa.
+    /// </summary>
     public void GuardarEmpresa(EmpresaDTO empresa)
     {
         var p = new SqlParameter[] {
             new SqlParameter("@nombre_comercial", empresa.NombreComercial),
-            new SqlParameter("@razon_social", empresa.NombreComercial), // Simplificado
+            new SqlParameter("@razon_social", empresa.NombreComercial), // Usamos NombreComercial como RazonSocial para evitar error de propiedad
             new SqlParameter("@cedula_juridica", empresa.CedulaJuridica),
             new SqlParameter("@tipo_regimen", empresa.TipoRegimen),
             new SqlParameter("@telefono", "00000000"),
             new SqlParameter("@correo_notificaciones", empresa.CorreoNotificaciones),
             new SqlParameter("@sitio_web", "")
         };
+
         ExecuteNonQuery("sp_Empresa_Upsert", p);
     }
 
+    /// <summary>
+    /// Método de legado para obtener licencia simple.
+    /// </summary>
     public LicenciaDTO? ObtenerLicencia(string hardwareId)
     {
         var p = new SqlParameter[] { new SqlParameter("@hardware_id", hardwareId) };
         var dt = ExecuteQuery("sp_Licencia_Validar", p);
+
         if (dt.Rows.Count == 0) return null;
 
         var row = dt.Rows[0];
@@ -883,9 +1361,16 @@ public class UsuarioFactory : MasterDao
         _mapper = new UsuarioMapper();
     }
 
+    /// <summary>
+    /// Obtiene un usuario por su nombre de usuario. 
+    /// Utilizado por el Login y por el LicenseFilter para validar la sesión activa.
+    /// </summary>
     public UsuarioDTO? GetByUsername(string username)
     {
-        var parameters = new SqlParameter[] { new SqlParameter("@username", username) };
+        var parameters = new SqlParameter[] {
+            new SqlParameter("@username", username)
+        };
+
         var table = ExecuteQuery("sp_Usuario_GetByUsername", parameters);
 
         if (table.Rows.Count == 0) return null;
@@ -895,9 +1380,46 @@ public class UsuarioFactory : MasterDao
 
     public void Create(UsuarioDTO usuario)
     {
-        var parameters = _mapper.MapToParameters(usuario);
+        // Definimos exactamente los 7 parámetros que espera tu SP
+        var parameters = new SqlParameter[] {
+        new SqlParameter("@id", 0), // El SP lo pide pero no lo usa
+        new SqlParameter("@rol_id", usuario.RolId),
+        new SqlParameter("@sucursal_id", usuario.SucursalId),
+        new SqlParameter("@nombre_completo", usuario.NombreCompleto),
+        new SqlParameter("@username", usuario.Username),
+        new SqlParameter("@password_hash", usuario.PasswordHash),
+        new SqlParameter("@activo", usuario.Activo)
+    };
+
+        // Ejecutamos el procedimiento
         ExecuteStoredProcedure("sp_Usuario_Insert", parameters);
     }
+
+    /// <summary>
+    /// Registra o limpia el Hardware ID asociado a la sesión activa del usuario.
+    /// </summary>
+    /// <param name="usuarioId">ID del usuario en la base de datos.</param>
+    /// <param name="hardwareId">ID de la PC. Si es null, libera la sesión (Logout).</param>
+    public void ActualizarSesionHardware(int usuarioId, string? hardwareId)
+    {
+        var parameters = new SqlParameter[] {
+            new SqlParameter("@id", usuarioId),
+            // Si hardwareId es null, enviamos DBNull.Value a SQL para limpiar el campo
+            new SqlParameter("@hardware_id_sesion", (object?)hardwareId ?? DBNull.Value)
+        };
+
+        // Ejecuta el procedimiento almacenado que actualiza la tabla USUARIO
+        ExecuteNonQuery("sp_Usuario_ActualizarSesion", parameters);
+    }
+
+    public void RegistrarLogin(int usuarioId)
+    {
+        var parameters = new Microsoft.Data.SqlClient.SqlParameter[] {
+        new Microsoft.Data.SqlClient.SqlParameter("@id", usuarioId)
+    };
+        ExecuteNonQuery("sp_Usuario_RegistrarLogin", parameters);
+    }
+
 }.
  
 --- RUTA: C:\Users\Luis\source\repos\Integra\IntegraPro\IntegraPro.DataAccess\Mappers\IMapper.cs --- 
@@ -990,7 +1512,9 @@ public class UsuarioMapper : IMapper<UsuarioDTO>
             Username = row["username"]?.ToString() ?? "",
             PasswordHash = row["password_hash"]?.ToString() ?? "",
             Activo = row["activo"] != DBNull.Value && Convert.ToBoolean(row["activo"]),
-            UltimoLogin = row["ultimo_login"] != DBNull.Value ? Convert.ToDateTime(row["ultimo_login"]) : null
+            UltimoLogin = row["ultimo_login"] != DBNull.Value ? Convert.ToDateTime(row["ultimo_login"]) : null,
+            HardwareIdSesion = row.Table.Columns.Contains("hardware_id_sesion") && row["hardware_id_sesion"] != DBNull.Value
+                               ? row["hardware_id_sesion"].ToString() : null
         };
     }
 
@@ -1004,7 +1528,8 @@ public class UsuarioMapper : IMapper<UsuarioDTO>
             new SqlParameter("@nombre_completo", entity.NombreCompleto ?? (object)DBNull.Value),
             new SqlParameter("@username", entity.Username ?? (object)DBNull.Value),
             new SqlParameter("@password_hash", entity.PasswordHash ?? (object)DBNull.Value),
-            new SqlParameter("@activo", entity.Activo)
+            new SqlParameter("@activo", entity.Activo),
+            new SqlParameter("@hardware_id_sesion", (object?)entity.HardwareIdSesion ?? DBNull.Value)
         };
     }
 }.
@@ -1037,7 +1562,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("IntegraPro.DataAccess")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+fc3d0a092d39c0a95b12dc0dfec5f0046b936a05")]
 [assembly: System.Reflection.AssemblyProductAttribute("IntegraPro.DataAccess")]
 [assembly: System.Reflection.AssemblyTitleAttribute("IntegraPro.DataAccess")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
@@ -1147,26 +1672,30 @@ public class ProductoComposicionDTO
 --- RUTA: C:\Users\Luis\source\repos\Integra\IntegraPro\IntegraPro.DTO\Models\UsuarioDTO.cs --- 
 --- NOMBRE: UsuarioDTO.cs --- 
  
-﻿using System.ComponentModel.DataAnnotations;
-
-namespace IntegraPro.DTO.Models;
+﻿namespace IntegraPro.DTO.Models;
 
 public class UsuarioDTO
 {
     public int Id { get; set; }
-
-    [Required(ErrorMessage = "El nombre completo es obligatorio")]
-    public string NombreCompleto { get; set; } = string.Empty;
-
-    [Required(ErrorMessage = "El nombre de usuario es obligatorio")]
-    public string Username { get; set; } = string.Empty;
-
-    public string? Password { get; set; }
-    public string PasswordHash { get; set; } = string.Empty;
     public int RolId { get; set; }
     public int SucursalId { get; set; }
+    public string NombreCompleto { get; set; } = string.Empty;
+    public string Username { get; set; } = string.Empty;
+    public string? Password { get; set; }
+    public string PasswordHash { get; set; } = string.Empty;
+    public string CorreoElectronico { get; set; } = string.Empty;
     public bool Activo { get; set; }
     public DateTime? UltimoLogin { get; set; }
+
+    // Nueva propiedad para control de sesión
+    public string? HardwareIdSesion { get; set; }
+}
+
+// Clase de apoyo para recibir credenciales
+public class LoginRequest
+{
+    public string Username { get; set; } = string.Empty;
+    public string Password { get; set; } = string.Empty;
 }.
  
 --- RUTA: C:\Users\Luis\source\repos\Integra\IntegraPro\IntegraPro.DTO\obj\Debug\net9.0\.NETCoreApp,Version=v9.0.AssemblyAttributes.cs --- 
