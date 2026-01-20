@@ -26,6 +26,8 @@ builder.Services.AddScoped(sp => new ConfiguracionFactory(connectionString));
 builder.Services.AddScoped<LicenciaService>();
 builder.Services.AddScoped<IUsuarioService, UsuarioService>();
 builder.Services.AddScoped<IProductoService, ProductoService>();
+// LÍNEA AÑADIDA: Registro de Categoría para solucionar el error 500
+builder.Services.AddScoped<ICategoriaService, CategoriaService>();
 
 // ==========================================
 // 3. SERVICIOS BASE DE LA API
