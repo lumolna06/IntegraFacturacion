@@ -19,8 +19,13 @@ public class ProductoMapper : IMapper<ProductoDTO>
             UnidadMedida = row["unidad_medida"].ToString() ?? "Unid",
             CostoActual = Convert.ToDecimal(row["costo_actual"]),
             Precio1 = Convert.ToDecimal(row["precio_1"]),
+            // Manejo de precios nulos (Precio 2, 3 y 4)
+            Precio2 = row["precio_2"] != DBNull.Value ? Convert.ToDecimal(row["precio_2"]) : null,
+            Precio3 = row["precio_3"] != DBNull.Value ? Convert.ToDecimal(row["precio_3"]) : null,
+            Precio4 = row["precio_4"] != DBNull.Value ? Convert.ToDecimal(row["precio_4"]) : null,
             Existencia = Convert.ToDecimal(row["existencia"]),
             StockMinimo = Convert.ToDecimal(row["stock_minimo"]),
+            ExentoIva = Convert.ToBoolean(row["exento_iva"]),
             EsServicio = Convert.ToBoolean(row["es_servicio"]),
             EsElaborado = Convert.ToBoolean(row["es_elaborado"]),
             Activo = Convert.ToBoolean(row["activo"])
@@ -31,7 +36,6 @@ public class ProductoMapper : IMapper<ProductoDTO>
     {
         var parameters = new List<SqlParameter>
         {
-            // Nota: Quitamos el @id de la lista base
             new SqlParameter("@categoria_id", entity.CategoriaId),
             new SqlParameter("@cod_cabys", (object?)entity.CodCabys ?? DBNull.Value),
             new SqlParameter("@codigo_barras", (object?)entity.CodigoBarras ?? DBNull.Value),
@@ -40,6 +44,11 @@ public class ProductoMapper : IMapper<ProductoDTO>
             new SqlParameter("@unidad_medida", entity.UnidadMedida),
             new SqlParameter("@costo_actual", entity.CostoActual),
             new SqlParameter("@precio_1", entity.Precio1),
+            // Parámetros para precios adicionales e IVA
+            new SqlParameter("@precio_2", (object?)entity.Precio2 ?? DBNull.Value),
+            new SqlParameter("@precio_3", (object?)entity.Precio3 ?? DBNull.Value),
+            new SqlParameter("@precio_4", (object?)entity.Precio4 ?? DBNull.Value),
+            new SqlParameter("@exento_iva", entity.ExentoIva),
             new SqlParameter("@existencia", entity.Existencia),
             new SqlParameter("@stock_minimo", entity.StockMinimo),
             new SqlParameter("@es_servicio", entity.EsServicio),
@@ -48,7 +57,6 @@ public class ProductoMapper : IMapper<ProductoDTO>
         };
 
         // SOLO si el Id es mayor a 0 (es un Update), lo agregamos.
-        // sp_Producto_Insert fallará si recibe @id porque no está en su definición.
         if (entity.Id > 0)
         {
             parameters.Add(new SqlParameter("@id", entity.Id));

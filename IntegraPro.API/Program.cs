@@ -21,13 +21,17 @@ builder.Services.AddScoped(sp => new UsuarioFactory(connectionString));
 builder.Services.AddScoped(sp => new ProductoFactory(connectionString));
 builder.Services.AddScoped(sp => new CategoriaFactory(connectionString));
 builder.Services.AddScoped(sp => new ConfiguracionFactory(connectionString));
+// NUEVA LÍNEA: Registro de Factory de Inventario
+builder.Services.AddScoped(sp => new InventarioFactory(connectionString));
 
 // --- Capa de Lógica (Services) ---
 builder.Services.AddScoped<LicenciaService>();
 builder.Services.AddScoped<IUsuarioService, UsuarioService>();
 builder.Services.AddScoped<IProductoService, ProductoService>();
-// LÍNEA AÑADIDA: Registro de Categoría para solucionar el error 500
+// LÍNEA AÑADIDA ANTERIORMENTE: Registro de Categoría
 builder.Services.AddScoped<ICategoriaService, CategoriaService>();
+// NUEVA LÍNEA: Registro de Servicio de Inventario
+builder.Services.AddScoped<IInventarioService, InventarioService>();
 
 // ==========================================
 // 3. SERVICIOS BASE DE LA API
