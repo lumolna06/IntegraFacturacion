@@ -55,4 +55,13 @@ public class UsuarioFactory : MasterDao
         // Ejecuta el procedimiento almacenado que actualiza la tabla USUARIO
         ExecuteNonQuery("sp_Usuario_ActualizarSesion", parameters);
     }
+
+    public void RegistrarLogin(int usuarioId)
+    {
+        var parameters = new Microsoft.Data.SqlClient.SqlParameter[] {
+        new Microsoft.Data.SqlClient.SqlParameter("@id", usuarioId)
+    };
+        ExecuteNonQuery("sp_Usuario_RegistrarLogin", parameters);
+    }
+
 }

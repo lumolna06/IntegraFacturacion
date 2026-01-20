@@ -4,75 +4,100 @@ using IntegraPro.DTO.Models;
 using System.Management;
 using Microsoft.Data.SqlClient;
 using System.Data;
+using System.Security.Cryptography;
+using System.Text;
 
 namespace IntegraPro.AppLogic.Services;
 
 public class LicenciaService
 {
     private readonly ConfiguracionFactory _factory;
+    private readonly string _masterKey = "IntegraPro_Secret_2026";
+    // URL por defecto para el control de bloqueos
+    private readonly string _killSwitchUrl = "https://tu-servidor-remoto.com/blacklist.txt";
 
     public LicenciaService(ConfiguracionFactory factory)
     {
         _factory = factory;
     }
 
-    /// <summary>
-    /// Obtiene un Identificador único de Hardware robusto.
-    /// Si el serial de BIOS es genérico, busca en Placa Base o usa el nombre del equipo.
-    /// </summary>
+    public ApiResponse<bool> ActivarLicencia(string llaveActivacion, string nombreEmpresa, string ruc, int maxEquipos)
+    {
+        try
+        {
+            string hidActual = GetHardwareId();
+            string llaveEsperada = GenerarLlave(ruc, hidActual, maxEquipos);
+
+            if (llaveActivacion != llaveEsperada)
+            {
+                return new ApiResponse<bool>(false, "La llave de activación es inválida para este equipo o los datos no coinciden.");
+            }
+
+            _factory.RegistrarConfiguracionInicial(nombreEmpresa, ruc, maxEquipos, hidActual);
+
+            return new ApiResponse<bool>(true, "¡Sistema activado con éxito!", true);
+        }
+        catch (Exception ex)
+        {
+            return new ApiResponse<bool>(false, $"Error al activar: {ex.Message}");
+        }
+    }
+
+    public string GenerarLlave(string ruc, string hid, int maxEquipos)
+    {
+        using (var sha = SHA256.Create())
+        {
+            string rawData = $"{ruc.Trim()}-{hid.Trim()}-{maxEquipos}-{_masterKey}";
+            byte[] bytes = sha.ComputeHash(Encoding.UTF8.GetBytes(rawData));
+            return Convert.ToBase64String(bytes).Replace("+", "").Replace("/", "").Substring(0, 16).ToUpper();
+        }
+    }
+
     public string GetHardwareId()
     {
         string serial = "";
         try
         {
-            // 1. INTENTO: Serial de la Placa Base (Win32_BaseBoard)
             serial = GetWmiProperty("Win32_BaseBoard", "SerialNumber");
-
-            // 2. INTENTO: Si el anterior es inválido, Serial de la BIOS
-            if (EsInvalido(serial))
-            {
-                serial = GetWmiProperty("Win32_BIOS", "SerialNumber");
-            }
-
-            // 3. INTENTO: Si sigue siendo inválido, ID del Procesador
-            if (EsInvalido(serial))
-            {
-                serial = GetWmiProperty("Win32_Processor", "ProcessorId");
-            }
-
-            // 4. RECURSO FINAL: Nombre de la PC (Garantiza que no sea "Default string")
-            if (EsInvalido(serial))
-            {
-                serial = $"PC-{Environment.MachineName.ToUpper()}";
-            }
+            if (EsInvalido(serial)) serial = GetWmiProperty("Win32_BIOS", "SerialNumber");
+            if (EsInvalido(serial)) serial = GetWmiProperty("Win32_Processor", "ProcessorId");
+            if (EsInvalido(serial)) serial = $"PC-{Environment.MachineName.ToUpper()}";
         }
         catch
         {
             serial = $"FALLBACK-{Environment.MachineName.ToUpper()}";
         }
-
-        return serial;
+        return serial.Trim();
     }
 
     /// <summary>
-    /// Valida si la PC actual está autorizada en la base de datos de configuraciones.
+    /// Valida la licencia local y verifica el Kill Switch remoto.
     /// </summary>
     public ApiResponse<bool> ValidarSistema()
     {
         try
         {
             string hid = GetHardwareId();
-
-            // Ejecutamos el SP multinivel que creamos en SQL a través de la Factory
             DataTable dt = _factory.ValidarLicenciaMultiEquipo(hid);
 
             if (dt != null && dt.Rows.Count > 0)
             {
                 string resultado = dt.Rows[0]["Resultado"]?.ToString() ?? "";
+                string rucRegistrado = dt.Rows[0]["Ruc"]?.ToString() ?? "";
 
-                // Verificamos las respuestas definidas en tu Stored Procedure
                 if (resultado == "EQUIPO_AUTORIZADO" || resultado == "NUEVO_EQUIPO_REGISTRADO")
                 {
+                    // --- VALIDACIÓN DE KILL SWITCH REMOTO ---
+                    // Si el RUC está en la lista negra, bloqueamos aunque la licencia local sea válida
+                    if (!string.IsNullOrEmpty(rucRegistrado))
+                    {
+                        var bloqueoRemoto = ValidarKillSwitchRemoto(rucRegistrado);
+                        if (bloqueoRemoto)
+                        {
+                            return new ApiResponse<bool>(false, "Esta licencia ha sido revocada remotamente por el administrador.");
+                        }
+                    }
+
                     return new ApiResponse<bool>(true, $"Acceso concedido: {resultado}", true);
                 }
 
@@ -90,7 +115,30 @@ public class LicenciaService
         }
     }
 
-    // --- MÉTODOS PRIVADOS DE APOYO ---
+    /// <summary>
+    /// Consulta una URL externa para verificar si el RUC del cliente está bloqueado.
+    /// </summary>
+    private bool ValidarKillSwitchRemoto(string ruc)
+    {
+        try
+        {
+            using (var client = new HttpClient())
+            {
+                // Timeout corto para no afectar la experiencia del usuario si no hay internet
+                client.Timeout = TimeSpan.FromSeconds(2);
+                var response = client.GetStringAsync(_killSwitchUrl).Result;
+
+                // Si la respuesta contiene el RUC, es que está bloqueado
+                return response.Contains(ruc);
+            }
+        }
+        catch
+        {
+            // Si falla la conexión (ej. no hay internet), permitimos el acceso
+            // ya que la licencia local ya fue validada previamente.
+            return false;
+        }
+    }
 
     private string GetWmiProperty(string table, string property)
     {
@@ -111,13 +159,8 @@ public class LicenciaService
     private bool EsInvalido(string sid)
     {
         if (string.IsNullOrWhiteSpace(sid)) return true;
-
         string val = sid.ToLower();
-        // Lista de valores genéricos que Windows devuelve cuando no hay serial real
-        return val == "default string" ||
-               val == "none" ||
-               val == "to be filled by o.e.m." ||
-               val == "00000000" ||
-               val == "unknown";
+        return val == "default string" || val == "none" || val == "to be filled by o.e.m." ||
+               val == "00000000" || val == "unknown";
     }
 }
