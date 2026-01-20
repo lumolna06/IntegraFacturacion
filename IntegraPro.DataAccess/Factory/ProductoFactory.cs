@@ -50,7 +50,7 @@ public class ProductoFactory : MasterDao
             new SqlParameter("@cantidad_necesaria", cantidad)
         };
 
-        // Asegúrate de que la tabla se llame PRODUCTO_COMPOSICION en tu SQL
+        // 
         string sql = "INSERT INTO PRODUCTO_COMPOSICION (producto_padre_id, material_id, cantidad_necesaria) VALUES (@producto_padre_id, @material_id, @cantidad_necesaria)";
 
         ExecuteNonQuery(sql, parameters, false);
