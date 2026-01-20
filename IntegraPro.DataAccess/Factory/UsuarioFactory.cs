@@ -15,6 +15,10 @@ public class UsuarioFactory : MasterDao
         _mapper = new UsuarioMapper();
     }
 
+    /// <summary>
+    /// Obtiene un usuario por su nombre de usuario. 
+    /// Utilizado por el Login y por el LicenseFilter para validar la sesión activa.
+    /// </summary>
     public UsuarioDTO? GetByUsername(string username)
     {
         var parameters = new SqlParameter[] {
@@ -49,7 +53,6 @@ public class UsuarioFactory : MasterDao
         };
 
         // Ejecuta el procedimiento almacenado que actualiza la tabla USUARIO
-        // Usamos ExecuteNonQuery porque es un UPDATE, no esperamos devolver una tabla
         ExecuteNonQuery("sp_Usuario_ActualizarSesion", parameters);
     }
 }

@@ -2,6 +2,7 @@ using IntegraPro.AppLogic.Interfaces;
 using IntegraPro.AppLogic.Services;
 using IntegraPro.DataAccess.Factory;
 using Microsoft.OpenApi.Models;
+using IntegraPro.API.Filters; // Asegúrate de que esta referencia coincida con tu carpeta de filtros
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -22,18 +23,18 @@ builder.Services.AddScoped(sp => new CategoriaFactory(connectionString));
 builder.Services.AddScoped(sp => new ConfiguracionFactory(connectionString));
 
 // --- Capa de Lógica (Services) ---
-// NOTA: LicenciaService se registra antes porque UsuarioService lo requiere en su constructor
 builder.Services.AddScoped<LicenciaService>();
 builder.Services.AddScoped<IUsuarioService, UsuarioService>();
 builder.Services.AddScoped<IProductoService, ProductoService>();
-// builder.Services.AddScoped<ICategoriaService, CategoriaService>(); 
 
 // ==========================================
 // 3. SERVICIOS BASE DE LA API
 // ==========================================
-// Si deseas activar la validación de licencia automática en TODO el sistema, 
-// usa: options.Filters.Add<IntegraPro.API.Filters.LicenseFilter>() dentro de AddControllers
-builder.Services.AddControllers();
+// Se activa la validación de licencia y sesión automática en TODO el sistema
+builder.Services.AddControllers(options =>
+{
+    options.Filters.Add<LicenseFilter>();
+});
 
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen(c =>
@@ -64,7 +65,7 @@ if (app.Environment.IsDevelopment())
 app.UseHttpsRedirection();
 
 // Importante: El orden de estos middlewares es vital
-app.UseAuthentication(); // Añádelo si vas a usar JWT más adelante
+app.UseAuthentication();
 app.UseAuthorization();
 
 app.MapControllers();
