@@ -12,8 +12,11 @@ namespace IntegraPro.AppLogic.Services;
 public class LicenciaService
 {
     private readonly ConfiguracionFactory _factory;
+
+    // Esta llave debe ser la misma en tu generador de licencias privado
     private readonly string _masterKey = "IntegraPro_Secret_2026";
-    // URL por defecto para el control de bloqueos
+
+    // URL para bloquear clientes morosos o licencias robadas (formato: lista de RUCs separados por comas o lineas)
     private readonly string _killSwitchUrl = "https://tu-servidor-remoto.com/blacklist.txt";
 
     public LicenciaService(ConfiguracionFactory factory)
@@ -21,6 +24,9 @@ public class LicenciaService
         _factory = factory;
     }
 
+    /// <summary>
+    /// Activa el sistema por primera vez vinculándolo al Hardware ID principal.
+    /// </summary>
     public ApiResponse<bool> ActivarLicencia(string llaveActivacion, string nombreEmpresa, string ruc, int maxEquipos)
     {
         try
@@ -43,35 +49,29 @@ public class LicenciaService
         }
     }
 
+    /// <summary>
+    /// Algoritmo de generación de llaves (debe ser idéntico en tu generador externo)
+    /// </summary>
     public string GenerarLlave(string ruc, string hid, int maxEquipos)
     {
         using (var sha = SHA256.Create())
         {
+            // El formato es RUC-HID-MAX-KEY
             string rawData = $"{ruc.Trim()}-{hid.Trim()}-{maxEquipos}-{_masterKey}";
             byte[] bytes = sha.ComputeHash(Encoding.UTF8.GetBytes(rawData));
-            return Convert.ToBase64String(bytes).Replace("+", "").Replace("/", "").Substring(0, 16).ToUpper();
-        }
-    }
 
-    public string GetHardwareId()
-    {
-        string serial = "";
-        try
-        {
-            serial = GetWmiProperty("Win32_BaseBoard", "SerialNumber");
-            if (EsInvalido(serial)) serial = GetWmiProperty("Win32_BIOS", "SerialNumber");
-            if (EsInvalido(serial)) serial = GetWmiProperty("Win32_Processor", "ProcessorId");
-            if (EsInvalido(serial)) serial = $"PC-{Environment.MachineName.ToUpper()}";
+            // Retornamos un código corto de 16 caracteres para facilidad del usuario
+            return Convert.ToBase64String(bytes)
+                .Replace("+", "")
+                .Replace("/", "")
+                .Replace("=", "")
+                .Substring(0, 16)
+                .ToUpper();
         }
-        catch
-        {
-            serial = $"FALLBACK-{Environment.MachineName.ToUpper()}";
-        }
-        return serial.Trim();
     }
 
     /// <summary>
-    /// Valida la licencia local y verifica el Kill Switch remoto.
+    /// Valida si el equipo actual tiene permiso de ejecución.
     /// </summary>
     public ApiResponse<bool> ValidarSistema()
     {
@@ -87,56 +87,73 @@ public class LicenciaService
 
                 if (resultado == "EQUIPO_AUTORIZADO" || resultado == "NUEVO_EQUIPO_REGISTRADO")
                 {
-                    // --- VALIDACIÓN DE KILL SWITCH REMOTO ---
-                    // Si el RUC está en la lista negra, bloqueamos aunque la licencia local sea válida
+                    // Validación de seguridad adicional (Remota)
                     if (!string.IsNullOrEmpty(rucRegistrado))
                     {
-                        var bloqueoRemoto = ValidarKillSwitchRemoto(rucRegistrado);
-                        if (bloqueoRemoto)
+                        if (EstaEnListaNegra(rucRegistrado))
                         {
-                            return new ApiResponse<bool>(false, "Esta licencia ha sido revocada remotamente por el administrador.");
+                            return new ApiResponse<bool>(false, "Licencia revocada: Por favor contacte al soporte técnico.");
                         }
                     }
 
-                    return new ApiResponse<bool>(true, $"Acceso concedido: {resultado}", true);
+                    return new ApiResponse<bool>(true, $"Acceso concedido", true);
                 }
 
                 if (resultado == "LIMITE_ALCANZADO")
                 {
-                    return new ApiResponse<bool>(false, "Límite de licencias alcanzado para este paquete.");
+                    return new ApiResponse<bool>(false, "Se ha alcanzado el límite de equipos permitidos para esta licencia.");
                 }
             }
 
-            return new ApiResponse<bool>(false, "Licencia no válida o equipo no autorizado.");
+            return new ApiResponse<bool>(false, "Sistema no activado o hardware no reconocido.");
         }
         catch (Exception ex)
         {
-            return new ApiResponse<bool>(false, $"Error crítico en validación: {ex.Message}");
+            return new ApiResponse<bool>(false, $"Error crítico de seguridad: {ex.Message}");
         }
     }
 
     /// <summary>
-    /// Consulta una URL externa para verificar si el RUC del cliente está bloqueado.
+    /// Obtiene el Identificador único de Hardware (HID)
     /// </summary>
-    private bool ValidarKillSwitchRemoto(string ruc)
+    public string GetHardwareId()
+    {
+        string serial = "";
+        try
+        {
+            // Intentar con Serial de la Placa Base (Motherboard)
+            serial = GetWmiProperty("Win32_BaseBoard", "SerialNumber");
+
+            // Fallback 1: BIOS
+            if (EsInvalido(serial)) serial = GetWmiProperty("Win32_BIOS", "SerialNumber");
+
+            // Fallback 2: ID del Procesador
+            if (EsInvalido(serial)) serial = GetWmiProperty("Win32_Processor", "ProcessorId");
+
+            // Fallback Final: Nombre de la máquina (Menos seguro pero funcional)
+            if (EsInvalido(serial)) serial = $"PC-{Environment.MachineName.ToUpper()}";
+        }
+        catch
+        {
+            serial = $"FB-{Environment.MachineName.ToUpper()}";
+        }
+        return serial.Trim();
+    }
+
+    private bool EstaEnListaNegra(string ruc)
     {
         try
         {
             using (var client = new HttpClient())
             {
-                // Timeout corto para no afectar la experiencia del usuario si no hay internet
-                client.Timeout = TimeSpan.FromSeconds(2);
+                client.Timeout = TimeSpan.FromSeconds(2); // No bloqueamos al usuario si no hay internet
                 var response = client.GetStringAsync(_killSwitchUrl).Result;
-
-                // Si la respuesta contiene el RUC, es que está bloqueado
                 return response.Contains(ruc);
             }
         }
         catch
         {
-            // Si falla la conexión (ej. no hay internet), permitimos el acceso
-            // ya que la licencia local ya fue validada previamente.
-            return false;
+            return false; // Si falla el internet, permitimos seguir trabajando localmente
         }
     }
 
@@ -144,6 +161,7 @@ public class LicenciaService
     {
         try
         {
+            // Nota: Requiere NuGet System.Management
             using (ManagementObjectSearcher searcher = new ManagementObjectSearcher($"SELECT {property} FROM {table}"))
             {
                 foreach (ManagementObject obj in searcher.Get())
@@ -161,6 +179,6 @@ public class LicenciaService
         if (string.IsNullOrWhiteSpace(sid)) return true;
         string val = sid.ToLower();
         return val == "default string" || val == "none" || val == "to be filled by o.e.m." ||
-               val == "00000000" || val == "unknown";
+               val == "00000000" || val == "unknown" || val.Length < 5;
     }
 }

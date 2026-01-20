@@ -5,8 +5,8 @@ POST {{IntegraPro.API_HostAddress}}/api/auth/register
 Content-Type: application/json
 
 {
-  "nombreCompleto": "Luis Administrador",
-  "username": "admin",
+  "nombreCompleto": "Llaves Prueba",
+  "username": "admin2",
   "password": "Password123!",
   "rolId": 1,
   "sucursalId": 1,

@@ -34,8 +34,18 @@ public class UsuarioFactory : MasterDao
 
     public void Create(UsuarioDTO usuario)
     {
-        // Usamos el mapper para convertir el objeto DTO en parámetros de SQL
-        var parameters = _mapper.MapToParameters(usuario);
+        // Definimos exactamente los 7 parámetros que espera tu SP
+        var parameters = new SqlParameter[] {
+        new SqlParameter("@id", 0), // El SP lo pide pero no lo usa
+        new SqlParameter("@rol_id", usuario.RolId),
+        new SqlParameter("@sucursal_id", usuario.SucursalId),
+        new SqlParameter("@nombre_completo", usuario.NombreCompleto),
+        new SqlParameter("@username", usuario.Username),
+        new SqlParameter("@password_hash", usuario.PasswordHash),
+        new SqlParameter("@activo", usuario.Activo)
+    };
+
+        // Ejecutamos el procedimiento
         ExecuteStoredProcedure("sp_Usuario_Insert", parameters);
     }
 

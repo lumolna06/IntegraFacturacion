@@ -12,18 +12,17 @@ public class ConfiguracionFactory : MasterDao
     /// <summary>
     /// Registra la licencia inicial en la base de datos tras validar la llave de activación.
     /// </summary>
-    public void RegistrarConfiguracionInicial(string empresa, string ruc, int max, string hid)
+    public void RegistrarConfiguracionInicial(string nombreEmpresa, string ruc, int maxEquipos, string hid)
     {
-        var parameters = new SqlParameter[]
-        {
-            new SqlParameter("@empresa", empresa),
-            new SqlParameter("@ruc", ruc),
-            new SqlParameter("@max", max),
-            new SqlParameter("@hid", hid)
-        };
+        var parameters = new Microsoft.Data.SqlClient.SqlParameter[] {
+        new Microsoft.Data.SqlClient.SqlParameter("@nombre_empresa", nombreEmpresa),
+        new Microsoft.Data.SqlClient.SqlParameter("@ruc", ruc),
+        new Microsoft.Data.SqlClient.SqlParameter("@max_equipos", maxEquipos),
+        new Microsoft.Data.SqlClient.SqlParameter("@hid_principal", hid)
+    };
 
-        // Ejecutamos el procedimiento almacenado que limpia registros previos e inserta la nueva licencia
-        ExecuteStoredProcedure("sp_Configuracion_ActivarSistema", parameters);
+        // Llamamos al SP que creamos en SQL Server para que inserte Empresa y Sucursal
+        ExecuteNonQuery("sp_Configuracion_ActivarSistema", parameters);
     }
 
     /// <summary>
@@ -46,13 +45,14 @@ public class ConfiguracionFactory : MasterDao
     {
         var p = new SqlParameter[] {
             new SqlParameter("@nombre_comercial", empresa.NombreComercial),
-            new SqlParameter("@razon_social", empresa.NombreComercial),
+            new SqlParameter("@razon_social", empresa.NombreComercial), // Usamos NombreComercial como RazonSocial para evitar error de propiedad
             new SqlParameter("@cedula_juridica", empresa.CedulaJuridica),
             new SqlParameter("@tipo_regimen", empresa.TipoRegimen),
             new SqlParameter("@telefono", "00000000"),
             new SqlParameter("@correo_notificaciones", empresa.CorreoNotificaciones),
             new SqlParameter("@sitio_web", "")
         };
+
         ExecuteNonQuery("sp_Empresa_Upsert", p);
     }
 
@@ -63,6 +63,7 @@ public class ConfiguracionFactory : MasterDao
     {
         var p = new SqlParameter[] { new SqlParameter("@hardware_id", hardwareId) };
         var dt = ExecuteQuery("sp_Licencia_Validar", p);
+
         if (dt.Rows.Count == 0) return null;
 
         var row = dt.Rows[0];
