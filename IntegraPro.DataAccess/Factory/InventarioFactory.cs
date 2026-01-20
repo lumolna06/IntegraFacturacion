@@ -8,15 +8,16 @@ public class InventarioFactory(string connectionString) : MasterDao(connectionSt
 {
     public bool Insertar(MovimientoInventarioDTO dto)
     {
+        // Eliminamos 'fecha' de la consulta para que SQL use el DEFAULT GETDATE()
+        // Dejamos que el Trigger maneje las existencias previa y posterior
         string sql = @"INSERT INTO MOVIMIENTO_INVENTARIO 
-            (producto_id, usuario_id, fecha, tipo_movimiento, cantidad, documento_referencia, notas) 
-            VALUES (@pid, @uid, @fec, @tipo, @cant, @ref, @not)";
+                       (producto_id, usuario_id, tipo_movimiento, cantidad, documento_referencia, notas) 
+                       VALUES (@pid, @uid, @tipo, @cant, @ref, @not)";
 
         var p = new[] {
             new SqlParameter("@pid", dto.ProductoId),
             new SqlParameter("@uid", dto.UsuarioId),
-            new SqlParameter("@fec", dto.Fecha),
-            new SqlParameter("@tipo", dto.TipoMovimiento),
+            new SqlParameter("@tipo", dto.TipoMovimiento.ToUpper()), // Normalizamos a MAYÚSCULAS para el Trigger
             new SqlParameter("@cant", dto.Cantidad),
             new SqlParameter("@ref", (object?)dto.DocumentoReferencia ?? DBNull.Value),
             new SqlParameter("@not", (object?)dto.Notas ?? DBNull.Value)
@@ -24,13 +25,14 @@ public class InventarioFactory(string connectionString) : MasterDao(connectionSt
 
         try
         {
-            // Cambiamos el return por una ejecución directa
+            // Ejecutamos solo el INSERT. 
+            // El Trigger se encargará de actualizar la tabla PRODUCTO y los saldos del movimiento.
             ExecuteNonQuery(sql, p, false);
             return true;
         }
-        catch
+        catch (Exception)
         {
-            // Si algo falla en el MasterDao, llegará aquí
+            // Loguear la excepción si es necesario
             return false;
         }
     }

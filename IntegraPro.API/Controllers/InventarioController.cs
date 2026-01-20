@@ -14,4 +14,13 @@ public class InventarioController(IInventarioService service) : ControllerBase
         var result = service.Registrar(dto);
         return result.Result ? Ok(result) : BadRequest(result);
     }
+
+    // NUEVO ENDPOINT: Para procesar la fabricación de productos elaborados
+    [HttpPost("producir")]
+    public IActionResult Producir(int productoId, decimal cantidad, int usuarioId)
+    {
+        // Este método descontará materiales y aumentará el producto terminado
+        var result = service.ProcesarProduccion(productoId, cantidad, usuarioId);
+        return result.Result ? Ok(result) : BadRequest(result);
+    }
 }
