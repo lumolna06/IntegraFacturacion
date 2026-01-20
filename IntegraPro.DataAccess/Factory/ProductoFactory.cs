@@ -46,11 +46,13 @@ public class ProductoFactory : MasterDao
     {
         var parameters = new[]
         {
-            new SqlParameter("@producto_padre_id", padreId),
-            new SqlParameter("@material_id", materialId),
-            new SqlParameter("@cantidad_necesaria", cantidad)
-        };
-        ExecuteNonQuery("INSERT INTO PRODUCTO_COMPOSICION (producto_padre_id, material_id, cantidad_necesaria) VALUES (@producto_padre_id, @material_id, @cantidad_necesaria)", parameters);
+        new SqlParameter("@producto_padre_id", padreId),
+        new SqlParameter("@material_id", materialId),
+        new SqlParameter("@cantidad_necesaria", cantidad)
+    };
+
+        // Agregamos el "false" al final para indicar que NO es un Stored Procedure
+        ExecuteNonQuery("INSERT INTO PRODUCTO_COMPOSICION (producto_padre_id, material_id, cantidad_necesaria) VALUES (@producto_padre_id, @material_id, @cantidad_necesaria)", parameters, false);
     }
 
     public List<ProductoDTO> GetStockAlerts()

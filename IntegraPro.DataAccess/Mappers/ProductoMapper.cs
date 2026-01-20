@@ -29,14 +29,14 @@ public class ProductoMapper : IMapper<ProductoDTO>
 
     public SqlParameter[] MapToParameters(ProductoDTO entity)
     {
-        return new SqlParameter[]
+        var parameters = new List<SqlParameter>
         {
-            new SqlParameter("@id", entity.Id),
+            // Nota: Quitamos el @id de la lista base
             new SqlParameter("@categoria_id", entity.CategoriaId),
-            new SqlParameter("@cod_cabys", entity.CodCabys ?? (object)DBNull.Value),
-            new SqlParameter("@codigo_barras", entity.CodigoBarras ?? (object)DBNull.Value),
+            new SqlParameter("@cod_cabys", (object?)entity.CodCabys ?? DBNull.Value),
+            new SqlParameter("@codigo_barras", (object?)entity.CodigoBarras ?? DBNull.Value),
             new SqlParameter("@nombre", entity.Nombre),
-            new SqlParameter("@descripcion", entity.Descripcion ?? (object)DBNull.Value),
+            new SqlParameter("@descripcion", (object?)entity.Descripcion ?? DBNull.Value),
             new SqlParameter("@unidad_medida", entity.UnidadMedida),
             new SqlParameter("@costo_actual", entity.CostoActual),
             new SqlParameter("@precio_1", entity.Precio1),
@@ -46,5 +46,14 @@ public class ProductoMapper : IMapper<ProductoDTO>
             new SqlParameter("@es_elaborado", entity.EsElaborado),
             new SqlParameter("@activo", entity.Activo)
         };
+
+        // SOLO si el Id es mayor a 0 (es un Update), lo agregamos.
+        // sp_Producto_Insert fallará si recibe @id porque no está en su definición.
+        if (entity.Id > 0)
+        {
+            parameters.Add(new SqlParameter("@id", entity.Id));
+        }
+
+        return parameters.ToArray();
     }
 }

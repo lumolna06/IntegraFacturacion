@@ -120,6 +120,21 @@ public class AuthController : ControllerBase
 
 public record LoginRequest(string Username, string Password);.
  
+--- RUTA: C:\Users\Luis\source\repos\Integra\IntegraPro\IntegraPro.API\Controllers\CategoriaController.cs --- 
+--- NOMBRE: CategoriaController.cs --- 
+ 
+﻿using IntegraPro.AppLogic.Interfaces;
+using IntegraPro.DTO.Models;
+using Microsoft.AspNetCore.Mvc;
+
+[ApiController]
+[Route("api/[controller]")]
+public class CategoriaController(ICategoriaService service) : ControllerBase
+{
+    [HttpGet] public IActionResult Get() => Ok(service.ObtenerTodas());
+    [HttpPost] public IActionResult Post([FromBody] CategoriaDTO dto) => Ok(service.Crear(dto));
+}.
+ 
 --- RUTA: C:\Users\Luis\source\repos\Integra\IntegraPro\IntegraPro.API\Controllers\LicenciaController.cs --- 
 --- NOMBRE: LicenciaController.cs --- 
  
@@ -198,6 +213,24 @@ public class LicenciaController : ControllerBase
         // Si el RUC está en tu lista de GitHub, ValidarSistema() devolverá false.
         return response.Result ? Ok(response) : StatusCode(403, response);
     }
+}.
+ 
+--- RUTA: C:\Users\Luis\source\repos\Integra\IntegraPro\IntegraPro.API\Controllers\ProductoController.cs --- 
+--- NOMBRE: ProductoController.cs --- 
+ 
+﻿using IntegraPro.AppLogic.Interfaces;
+using IntegraPro.DTO.Models;
+using Microsoft.AspNetCore.Mvc;
+
+[ApiController]
+[Route("api/[controller]")]
+public class ProductoController(IProductoService service) : ControllerBase
+{
+    [HttpGet] public IActionResult Get() => Ok(service.ObtenerTodos());
+    [HttpPost] public IActionResult Post([FromBody] ProductoDTO dto) => Ok(service.Crear(dto));
+
+    [HttpGet("alertas")]
+    public IActionResult GetAlertas() => Ok(service.ObtenerAlertasStock());
 }.
  
 --- RUTA: C:\Users\Luis\source\repos\Integra\IntegraPro\IntegraPro.API\Controllers\UsuarioController.cs --- 
@@ -383,7 +416,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("IntegraPro.API")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+fc3d0a092d39c0a95b12dc0dfec5f0046b936a05")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+3ebcf1463c80ab9e2e8369e9475f1c8b81e4f468")]
 [assembly: System.Reflection.AssemblyProductAttribute("IntegraPro.API")]
 [assembly: System.Reflection.AssemblyTitleAttribute("IntegraPro.API")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
@@ -511,7 +544,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("IntegraPro.AppLogic")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+fc3d0a092d39c0a95b12dc0dfec5f0046b936a05")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+3ebcf1463c80ab9e2e8369e9475f1c8b81e4f468")]
 [assembly: System.Reflection.AssemblyProductAttribute("IntegraPro.AppLogic")]
 [assembly: System.Reflection.AssemblyTitleAttribute("IntegraPro.AppLogic")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
@@ -731,106 +764,36 @@ using IntegraPro.DTO.Models;
 
 namespace IntegraPro.AppLogic.Services;
 
-public class ProductoService : IProductoService
+public class ProductoService(ProductoFactory factory) : IProductoService
 {
-    private readonly ProductoFactory _factory;
-
-    public ProductoService(ProductoFactory factory)
-    {
-        _factory = factory;
-    }
-
-    public ApiResponse<List<ProductoDTO>> ObtenerTodos()
-    {
-        try
-        {
-            var lista = _factory.GetAll();
-            return new ApiResponse<List<ProductoDTO>>(true, "Productos recuperados con éxito", lista);
-        }
-        catch (Exception ex)
-        {
-            Logger.WriteLog("Error", "ObtenerTodosProductos", ex.Message);
-            return new ApiResponse<List<ProductoDTO>>(false, $"Error al obtener productos: {ex.Message}");
-        }
-    }
-
     public ApiResponse<bool> Crear(ProductoDTO producto)
     {
         try
         {
-            // Validaciones básicas
-            Guard.AgainstEmptyString(producto.Nombre, "Nombre del Producto");
-            if (producto.Precio1 < 0) return new ApiResponse<bool>(false, "El precio no puede ser negativo");
+            // 1. Crear el producto principal y obtener su ID
+            int nuevoId = factory.Create(producto);
 
-            // 1. Insertar el producto en la tabla PRODUCTO
-            // El factory debe devolver el ID generado (SCOPE_IDENTITY)
-            int nuevoProductoId = _factory.Create(producto);
-
-            // 2. Si el producto es elaborado (tiene receta), guardamos su composición
-            if (producto.EsElaborado && producto.Receta != null && producto.Receta.Any())
+            // 2. Si tiene receta (es elaborado), insertar los componentes
+            if (producto.EsElaborado && producto.Receta != null && producto.Receta.Count > 0)
             {
                 foreach (var item in producto.Receta)
                 {
-                    // Guardamos cada material asociado al producto padre
-                    _factory.InsertarComposicion(nuevoProductoId, item.MaterialId, item.CantidadNecesaria);
+                    factory.InsertarComposicion(nuevoId, item.MaterialId, item.CantidadNecesaria);
                 }
-                Logger.WriteLog("Inventario", "CrearProducto", $"Producto elaborado '{producto.Nombre}' creado con {producto.Receta.Count} materiales.");
             }
-            else
-            {
-                Logger.WriteLog("Inventario", "CrearProducto", $"Producto simple '{producto.Nombre}' creado.");
-            }
-
-            return new ApiResponse<bool>(true, "Producto registrado correctamente", true);
+            return new ApiResponse<bool>(true, "Producto y receta guardados", true);
         }
         catch (Exception ex)
         {
-            Logger.WriteLog("Error", "CrearProducto", ex.Message);
-            return new ApiResponse<bool>(false, $"Error al crear producto: {ex.Message}");
+            return new ApiResponse<bool>(false, ex.Message, false);
         }
     }
 
-    public ApiResponse<List<ProductoDTO>> ObtenerAlertasStock()
-    {
-        try
-        {
-            // Utiliza la vista VW_ALERTA_STOCK_BAJO definida en tu SQL
-            var alertas = _factory.GetStockAlerts();
-            return new ApiResponse<List<ProductoDTO>>(true, "Alertas de stock bajo obtenidas", alertas);
-        }
-        catch (Exception ex)
-        {
-            Logger.WriteLog("Error", "ObtenerAlertasStock", ex.Message);
-            return new ApiResponse<List<ProductoDTO>>(false, ex.Message);
-        }
-    }
+    public ApiResponse<List<ProductoDTO>> ObtenerTodos() =>
+        new(true, "Lista cargada", factory.GetAll());
 
-    public ApiResponse<ProductoDTO> ObtenerPorId(int id)
-    {
-        try
-        {
-            var producto = _factory.GetById(id);
-            if (producto == null) return new ApiResponse<ProductoDTO>(false, "Producto no encontrado");
-            return new ApiResponse<ProductoDTO>(true, "Producto encontrado", producto);
-        }
-        catch (Exception ex)
-        {
-            return new ApiResponse<ProductoDTO>(false, ex.Message);
-        }
-    }
-
-    public ApiResponse<bool> Actualizar(ProductoDTO producto)
-    {
-        try
-        {
-            _factory.Update(producto);
-            return new ApiResponse<bool>(true, "Producto actualizado con éxito", true);
-        }
-        catch (Exception ex)
-        {
-            return new ApiResponse<bool>(false, ex.Message);
-        }
-    }
+    public ApiResponse<List<ProductoDTO>> ObtenerAlertasStock() =>
+        new(true, "Alertas obtenidas", factory.GetStockAlerts());
 }.
  
 --- RUTA: C:\Users\Luis\source\repos\Integra\IntegraPro\IntegraPro.AppLogic\Services\UsuarioService.cs --- 
@@ -1562,7 +1525,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("IntegraPro.DataAccess")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+fc3d0a092d39c0a95b12dc0dfec5f0046b936a05")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+c557f960f1acd588bde03a63eb97309522b50e18")]
 [assembly: System.Reflection.AssemblyProductAttribute("IntegraPro.DataAccess")]
 [assembly: System.Reflection.AssemblyTitleAttribute("IntegraPro.DataAccess")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
