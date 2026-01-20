@@ -1,0 +1,25 @@
+@IntegraPro.API_HostAddress = http://localhost:5024
+
+### Registrar primer Usuario Administrador
+POST {{IntegraPro.API_HostAddress}}/api/auth/register
+Content-Type: application/json
+
+{
+  "nombreCompleto": "Luis Administrador",
+  "username": "admin",
+  "password": "Password123!",
+  "rolId": 1,
+  "sucursalId": 1,
+  "activo": true
+}
+
+###
+
+### Probar Login de Usuario
+POST {{IntegraPro.API_HostAddress}}/api/auth/login
+Content-Type: application/json
+
+{
+  "username": "admin",
+  "password": "Password123!"
+}
