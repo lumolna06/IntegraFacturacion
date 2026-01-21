@@ -32,7 +32,7 @@ public abstract class MasterDao
         return table;
     }
 
-    // 2. Para INSERT que devuelven el ID generado (Indispensable para ProductoFactory)
+    // 2. Para INSERT que devuelven el ID generado
     protected int ExecuteScalar(string spName, SqlParameter[]? parameters = null)
     {
         using var connection = GetConnection();
@@ -67,5 +67,26 @@ public abstract class MasterDao
     protected void ExecuteStoredProcedure(string spName, SqlParameter[] parameters)
     {
         ExecuteNonQuery(spName, parameters, true);
+    }
+
+    // ==========================================
+    // NUEVOS MÉTODOS PARA TRANSACCIONES (ACID)
+    // ==========================================
+
+    // Permite ejecutar un Scalar (como obtener el ID de factura) dentro de una transacción abierta
+    protected object ExecuteScalarInTransaction(string sql, SqlParameter[] parameters, SqlConnection connection, SqlTransaction transaction)
+    {
+        using var command = new SqlCommand(sql, connection, transaction);
+        if (parameters != null) command.Parameters.AddRange(parameters);
+        var result = command.ExecuteScalar();
+        return result ?? DBNull.Value;
+    }
+
+    // Permite ejecutar comandos (como el detalle o el kardex) dentro de una transacción abierta
+    protected void ExecuteNonQueryInTransaction(string sql, SqlParameter[] parameters, SqlConnection connection, SqlTransaction transaction)
+    {
+        using var command = new SqlCommand(sql, connection, transaction);
+        if (parameters != null) command.Parameters.AddRange(parameters);
+        command.ExecuteNonQuery();
     }
 }
