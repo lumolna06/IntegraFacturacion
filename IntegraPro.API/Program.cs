@@ -13,7 +13,7 @@ string connectionString = builder.Configuration.GetConnectionString("DefaultConn
     ?? "Server=DESKTOP-AR7JSQE\\SQLEXPRESS;Database=ERP_SistemaPro;Integrated Security=SSPI;TrustServerCertificate=True;";
 
 // ==========================================
-// 2. CONFIGURACIÓN DE CORS (Agregado para evitar bloqueos)
+// 2. CONFIGURACIÓN DE CORS (Para conexión con el Front-End)
 // ==========================================
 builder.Services.AddCors(options => {
     options.AddPolicy("AllowAll", policy => {
@@ -35,6 +35,10 @@ builder.Services.AddScoped(sp => new VentaFactory(connectionString));
 builder.Services.AddScoped(sp => new CajaFactory(connectionString));
 builder.Services.AddScoped(sp => new ClienteFactory(connectionString));
 
+// AGREGADOS PARA COMPRAS Y PROVEEDORES
+builder.Services.AddScoped(sp => new ProveedorFactory(connectionString));
+//builder.Services.AddScoped(sp => new CompraFactory(connectionString));
+
 // --- Capa de Lógica (Services) ---
 builder.Services.AddScoped<LicenciaService>();
 builder.Services.AddScoped<IUsuarioService, UsuarioService>();
@@ -42,9 +46,10 @@ builder.Services.AddScoped<IProductoService, ProductoService>();
 builder.Services.AddScoped<ICategoriaService, CategoriaService>();
 builder.Services.AddScoped<IInventarioService, InventarioService>();
 
-// Aquí el contenedor inyectará automáticamente VentaFactory, ClienteFactory y ProductoFactory
+// Servicios de procesos complejos
 builder.Services.AddScoped<VentaService>();
 builder.Services.AddScoped<CajaService>();
+//builder.Services.AddScoped<CompraService>(); // Agregado para procesar entradas de stock
 
 // ==========================================
 // 4. SERVICIOS BASE DE LA API
@@ -61,7 +66,7 @@ builder.Services.AddSwaggerGen(c =>
     {
         Title = "IntegraPro ERP - Sistema de Gestión General",
         Version = "v1",
-        Description = "API para gestión de inventarios, facturación y licenciamiento."
+        Description = "API para gestión de inventarios, facturación, compras y licenciamiento."
     });
 });
 
@@ -71,7 +76,6 @@ var app = builder.Build();
 // 5. PIPELINE DE SOLICITUDES (Middlewares)
 // ==========================================
 
-// Usar CORS antes de MapControllers
 app.UseCors("AllowAll");
 
 if (app.Environment.IsDevelopment())
