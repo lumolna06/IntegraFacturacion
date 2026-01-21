@@ -35,8 +35,6 @@ builder.Services.AddScoped(sp => new VentaFactory(connectionString));
 builder.Services.AddScoped(sp => new CajaFactory(connectionString));
 builder.Services.AddScoped(sp => new ClienteFactory(connectionString));
 builder.Services.AddScoped(sp => new ProveedorFactory(connectionString));
-
-// ACTIVADO: Factory para el proceso de compras y CXP
 builder.Services.AddScoped(sp => new CompraFactory(connectionString));
 
 // --- Capa de Lógica (Services) ---
@@ -49,9 +47,10 @@ builder.Services.AddScoped<IInventarioService, InventarioService>();
 // Servicios de procesos complejos
 builder.Services.AddScoped<VentaService>();
 builder.Services.AddScoped<CajaService>();
-
-// ACTIVADO: Servicio para procesar compras, inventario y alertas
 builder.Services.AddScoped<CompraService>();
+
+// NUEVO: Servicio para lectura de XML de Hacienda Costa Rica
+builder.Services.AddScoped(sp => new XmlParserService(connectionString));
 
 // ==========================================
 // 4. SERVICIOS BASE DE LA API

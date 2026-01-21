@@ -53,6 +53,7 @@ public class CompraFactory(string connectionString)
             // 3. Insertar Detalles, Inventario y Actualizar Costos
             foreach (var det in compra.Detalles)
             {
+                // A. Insertar Detalle de Compra
                 string sqlDet = "INSERT INTO COMPRA_DETALLE (compra_id, producto_id, cantidad, costo_unitario_neto, monto_impuesto, total_linea) VALUES (@cId, @pId, @can, @cos, @mImp, @totL)";
                 using var cmdDet = new SqlCommand(sqlDet, conn, trans);
                 cmdDet.Parameters.AddWithValue("@cId", compraId);
@@ -63,19 +64,44 @@ public class CompraFactory(string connectionString)
                 cmdDet.Parameters.AddWithValue("@totL", det.TotalLinea);
                 cmdDet.ExecuteNonQuery();
 
+                // B. Movimiento Inventario (Entrada)
                 string sqlMov = "INSERT INTO MOVIMIENTO_INVENTARIO (producto_id, usuario_id, fecha, tipo_movimiento, cantidad, documento_referencia, notas) VALUES (@pId, @uId, GETDATE(), 'Entrada', @can, @ref, 'Compra Recibida')";
                 using var cmdMov = new SqlCommand(sqlMov, conn, trans);
                 cmdMov.Parameters.AddWithValue("@pId", det.ProductoId);
                 cmdMov.Parameters.AddWithValue("@uId", compra.UsuarioId);
                 cmdMov.Parameters.AddWithValue("@can", det.Cantidad);
-                cmdMov.Parameters.AddWithValue("@ref", "FAC-" + compra.NumeroFacturaProveedor);
+                cmdMov.Parameters.AddWithValue("@ref", "FAC-" + (compra.NumeroFacturaProveedor ?? "S/N"));
                 cmdMov.ExecuteNonQuery();
 
+                // C. Actualizar Costo Actual en Tabla Producto
                 string sqlCosto = "UPDATE PRODUCTO SET costo_actual = @nCos WHERE id = @pId";
                 using var cmdCosto = new SqlCommand(sqlCosto, conn, trans);
                 cmdCosto.Parameters.AddWithValue("@nCos", det.CostoUnitarioNeto);
                 cmdCosto.Parameters.AddWithValue("@pId", det.ProductoId);
                 cmdCosto.ExecuteNonQuery();
+
+                // D. --- NUEVO: GUARDAR EQUIVALENCIA AUTOMÁTICA ---
+                // Vinculamos el proveedor con el código CAByS/XML para futuras compras
+                if (!string.IsNullOrEmpty(det.CodigoCabys) && det.ProductoId > 0)
+                {
+                    string sqlEquiv = @"
+                        IF EXISTS (SELECT 1 FROM PRODUCTO_EQUIVALENCIA WHERE proveedor_id = @provId AND codigo_xml = @codXml)
+                        BEGIN
+                            UPDATE PRODUCTO_EQUIVALENCIA SET producto_id = @prodId 
+                            WHERE proveedor_id = @provId AND codigo_xml = @codXml
+                        END
+                        ELSE
+                        BEGIN
+                            INSERT INTO PRODUCTO_EQUIVALENCIA (proveedor_id, codigo_xml, producto_id) 
+                            VALUES (@provId, @codXml, @prodId)
+                        END";
+
+                    using var cmdEquiv = new SqlCommand(sqlEquiv, conn, trans);
+                    cmdEquiv.Parameters.AddWithValue("@provId", compra.ProveedorId);
+                    cmdEquiv.Parameters.AddWithValue("@codXml", det.CodigoCabys);
+                    cmdEquiv.Parameters.AddWithValue("@prodId", det.ProductoId);
+                    cmdEquiv.ExecuteNonQuery();
+                }
             }
 
             trans.Commit();
@@ -95,7 +121,7 @@ public class CompraFactory(string connectionString)
             {
                 cmdGet.Parameters.AddWithValue("@id", compraId);
                 using var reader = cmdGet.ExecuteReader();
-                while (reader.Read()) detalles.Add(((int)reader[0], (decimal)reader[1], reader[2].ToString()!));
+                while (reader.Read()) detalles.Add(((int)reader[0], (decimal)reader[1], reader[2]?.ToString() ?? "S/N"));
             }
 
             if (detalles.Count == 0) throw new Exception("Compra no encontrada o ya está anulada.");
@@ -127,12 +153,10 @@ public class CompraFactory(string connectionString)
         catch { trans.Rollback(); throw; }
     }
 
-    // --- NUEVO: ALERTAS DE CUENTAS POR PAGAR ---
     public List<AlertaPagoDTO> ObtenerAlertasPagos()
     {
         var alertas = new List<AlertaPagoDTO>();
         using var conn = new SqlConnection(_connectionString);
-        // Consumimos la vista SQL que creamos anteriormente
         using var cmd = new SqlCommand("SELECT * FROM VW_ALERTA_CUENTAS_PAGAR_PROXIMAS ORDER BY fecha_vencimiento ASC", conn);
 
         conn.Open();
