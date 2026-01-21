@@ -17,7 +17,7 @@ string connectionString = builder.Configuration.GetConnectionString("DefaultConn
     ?? "Server=DESKTOP-AR7JSQE\\SQLEXPRESS;Database=ERP_SistemaPro;Integrated Security=SSPI;TrustServerCertificate=True;";
 
 // ==========================================
-// 2. CONFIGURACI�N DE CORS (Agregado para evitar bloqueos)
+// 2. CONFIGURACI�N DE CORS (Para conexi�n con el Front-End)
 // ==========================================
 builder.Services.AddCors(options => {
     options.AddPolicy("AllowAll", policy => {
@@ -38,6 +38,8 @@ builder.Services.AddScoped(sp => new InventarioFactory(connectionString));
 builder.Services.AddScoped(sp => new VentaFactory(connectionString));
 builder.Services.AddScoped(sp => new CajaFactory(connectionString));
 builder.Services.AddScoped(sp => new ClienteFactory(connectionString));
+builder.Services.AddScoped(sp => new ProveedorFactory(connectionString));
+builder.Services.AddScoped(sp => new CompraFactory(connectionString));
 
 // --- Capa de L�gica (Services) ---
 builder.Services.AddScoped<LicenciaService>();
@@ -46,9 +48,13 @@ builder.Services.AddScoped<IProductoService, ProductoService>();
 builder.Services.AddScoped<ICategoriaService, CategoriaService>();
 builder.Services.AddScoped<IInventarioService, InventarioService>();
 
-// Aqu� el contenedor inyectar� autom�ticamente VentaFactory, ClienteFactory y ProductoFactory
+// Servicios de procesos complejos
 builder.Services.AddScoped<VentaService>();
 builder.Services.AddScoped<CajaService>();
+builder.Services.AddScoped<CompraService>();
+
+// NUEVO: Servicio para lectura de XML de Hacienda Costa Rica
+builder.Services.AddScoped(sp => new XmlParserService(connectionString));
 
 // ==========================================
 // 4. SERVICIOS BASE DE LA API
@@ -65,7 +71,7 @@ builder.Services.AddSwaggerGen(c =>
     {
         Title = "IntegraPro ERP - Sistema de Gesti�n General",
         Version = "v1",
-        Description = "API para gesti�n de inventarios, facturaci�n y licenciamiento."
+        Description = "API para gesti�n de inventarios, facturaci�n, compras y licenciamiento."
     });
 });
 
@@ -75,7 +81,6 @@ var app = builder.Build();
 // 5. PIPELINE DE SOLICITUDES (Middlewares)
 // ==========================================
 
-// Usar CORS antes de MapControllers
 app.UseCors("AllowAll");
 
 if (app.Environment.IsDevelopment())
@@ -317,6 +322,121 @@ public class ClienteController(IConfiguration config) : ControllerBase
     }
 }.
  
+--- RUTA: C:\Users\Luis\source\repos\Integra\IntegraPro\IntegraPro.API\Controllers\CompraController.cs --- 
+--- NOMBRE: CompraController.cs --- 
+ 
+﻿using Microsoft.AspNetCore.Mvc;
+using IntegraPro.AppLogic.Services;
+using IntegraPro.DTO.Models;
+
+namespace IntegraPro.API.Controllers;
+
+[ApiController]
+[Route("api/[controller]")]
+public class CompraController(CompraService compraService) : ControllerBase
+{
+    private readonly CompraService _service = compraService;
+
+    [HttpPost]
+    public IActionResult Post(CompraDTO compra)
+    {
+        try
+        {
+            _service.RegistrarNuevaCompra(compra);
+            return Ok(new { mensaje = "Compra procesada exitosamente." });
+        }
+        catch (Exception ex)
+        {
+            return BadRequest(new { error = ex.Message });
+        }
+    }
+
+    [HttpPost("pagar")]
+    public IActionResult PagarFactura([FromBody] PagoCxpDTO pago)
+    {
+        try
+        {
+            _service.AbonarAFactura(pago);
+            return Ok(new { mensaje = "Pago registrado exitosamente." });
+        }
+        catch (Exception ex)
+        {
+            return BadRequest(new { error = ex.Message });
+        }
+    }
+
+    // --- NUEVO ENDPOINT: RESUMEN GLOBAL PARA DASHBOARD ---
+    [HttpGet("resumen-general")]
+    public IActionResult GetResumenGeneral()
+    {
+        try
+        {
+            var resumen = _service.ObtenerResumenCxp();
+            return Ok(resumen);
+        }
+        catch (Exception ex)
+        {
+            return BadRequest(new { error = ex.Message });
+        }
+    }
+
+    [HttpGet("buscar-deudas")]
+    public IActionResult GetDeudas([FromQuery] string filtro)
+    {
+        try
+        {
+            var deudas = _service.ListarDeudas(filtro ?? "");
+            return Ok(deudas);
+        }
+        catch (Exception ex)
+        {
+            return BadRequest(new { error = ex.Message });
+        }
+    }
+
+    [HttpGet("{compraId}/historial-pagos")]
+    public IActionResult GetHistorialPagos(int compraId)
+    {
+        try
+        {
+            var historial = _service.ListarHistorialDePagos(compraId);
+            return Ok(historial);
+        }
+        catch (Exception ex)
+        {
+            return BadRequest(new { error = ex.Message });
+        }
+    }
+
+    [HttpDelete("{id}/{usuarioId}")]
+    public IActionResult Anular(int id, int usuarioId)
+    {
+        try
+        {
+            _service.AnularCompraExistente(id, usuarioId);
+            return Ok(new { mensaje = "Compra anulada y stock revertido." });
+        }
+        catch (Exception ex)
+        {
+            return BadRequest(new { error = ex.Message });
+        }
+    }
+
+    [HttpGet("alertas-pagos")]
+    public IActionResult GetAlertas()
+    {
+        try
+        {
+            var alertas = _service.ListarAlertasPagos();
+            return Ok(alertas);
+        }
+        catch (Exception ex)
+        {
+            return BadRequest(new { error = ex.Message });
+        }
+    }
+}.
+ 
 --- RUTA: C:\Users\Luis\source\repos\Integra\IntegraPro\IntegraPro.API\Controllers\InventarioController.cs --- 
 --- NOMBRE: InventarioController.cs --- 
  
@@ -445,6 +565,52 @@ public class ProductoController(IProductoService service) : ControllerBase
     public IActionResult GetAlertas() => Ok(service.ObtenerAlertasStock());
 }.
  
+--- RUTA: C:\Users\Luis\source\repos\Integra\IntegraPro\IntegraPro.API\Controllers\ProveedorController.cs --- 
+--- NOMBRE: ProveedorController.cs --- 
+ 
+﻿using Microsoft.AspNetCore.Mvc;
+using IntegraPro.DataAccess.Factory;
+using IntegraPro.DTO.Models;
+
+namespace IntegraPro.API.Controllers;
+
+[ApiController]
+[Route("api/[controller]")]
+public class ProveedorController(ProveedorFactory proveedorFactory) : ControllerBase
+{
+    private readonly ProveedorFactory _factory = proveedorFactory;
+
+    // Obtener todos los proveedores
+    [HttpGet]
+    public IActionResult Get() => Ok(_factory.ObtenerTodos());
+
+    // Crear un nuevo proveedor
+    [HttpPost]
+    public IActionResult Post(ProveedorDTO proveedor)
+    {
+        _factory.Crear(proveedor);
+        return Ok(new { mensaje = "Proveedor guardado correctamente" });
+    }
+
+    // Actualizar un proveedor existente
+    [HttpPut]
+    public IActionResult Put(ProveedorDTO proveedor)
+    {
+        if (proveedor.Id <= 0) return BadRequest("ID de proveedor no válido para actualizar.");
+        _factory.Actualizar(proveedor);
+        return Ok(new { mensaje = "Proveedor actualizado correctamente" });
+    }
+
+    // Eliminar (o desactivar) un proveedor
+    [HttpDelete("{id}")]
+    public IActionResult Delete(int id)
+    {
+        if (id <= 0) return BadRequest("ID de proveedor no válido.");
+        _factory.Eliminar(id);
+        return Ok(new { mensaje = "Proveedor eliminado correctamente" });
+    }
+}.
+ 
 --- RUTA: C:\Users\Luis\source\repos\Integra\IntegraPro\IntegraPro.API\Controllers\UsuarioController.cs --- 
 --- NOMBRE: UsuarioController.cs --- 
  
@@ -563,6 +729,35 @@ public class VentaController(VentaService service) : ControllerBase
     }
 }.
  
+--- RUTA: C:\Users\Luis\source\repos\Integra\IntegraPro\IntegraPro.API\Controllers\XmlController.cs --- 
+--- NOMBRE: XmlController.cs --- 
+ 
+﻿using Microsoft.AspNetCore.Mvc;
+using IntegraPro.AppLogic.Services;
+
+namespace IntegraPro.API.Controllers;
+
+[ApiController]
+[Route("api/[controller]")]
+public class XmlController(IConfiguration config) : ControllerBase
+{
+    private readonly string _conn = config.GetConnectionString("DefaultConnection")!;
+
+    [HttpPost("preprocesar")]
+    public IActionResult SubirXml(IFormFile archivo)
+    {
+        if (archivo == null) return BadRequest("No se recibió archivo.");
+
+        using var reader = new StreamReader(archivo.OpenReadStream());
+        string contenido = reader.ReadToEnd();
+
+        var service = new XmlParserService(_conn);
+        var resultado = service.ProcesarFacturaCR(contenido);
+
+        return Ok(resultado);
+    }
+}.
+ 
 --- RUTA: C:\Users\Luis\source\repos\Integra\IntegraPro\IntegraPro.API\Filters\LicenseFilter.cs --- 
 --- NOMBRE: LicenseFilter.cs --- 
  
@@ -666,7 +861,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("IntegraPro.API")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+7f305de852982f374155bcd2c0c108960c4ac95d")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+93f2d1c76915b33e444d362ddb68d39ad359438c")]
 [assembly: System.Reflection.AssemblyProductAttribute("IntegraPro.API")]
 [assembly: System.Reflection.AssemblyTitleAttribute("IntegraPro.API")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
@@ -824,7 +1019,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("IntegraPro.AppLogic")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+7f305de852982f374155bcd2c0c108960c4ac95d")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+93f2d1c76915b33e444d362ddb68d39ad359438c")]
 [assembly: System.Reflection.AssemblyProductAttribute("IntegraPro.AppLogic")]
 [assembly: System.Reflection.AssemblyTitleAttribute("IntegraPro.AppLogic")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
@@ -931,6 +1126,68 @@ public class CategoriaService(CategoriaFactory factory) : ICategoriaService
         {
             return new ApiResponse<bool>(false, ex.Message, false);
         }
+    }
+}.
+ 
+--- RUTA: C:\Users\Luis\source\repos\Integra\IntegraPro\IntegraPro.AppLogic\Services\CompraService.cs --- 
+--- NOMBRE: CompraService.cs --- 
+ 
+﻿using IntegraPro.DataAccess.Factory;
+using IntegraPro.DTO.Models;
+
+namespace IntegraPro.AppLogic.Services;
+
+public class CompraService(CompraFactory compraFactory)
+{
+    private readonly CompraFactory _factory = compraFactory;
+
+    public void RegistrarNuevaCompra(CompraDTO compra)
+    {
+        if (compra.Detalles.Count == 0)
+            throw new Exception("No hay productos en la compra.");
+
+        // El Factory maneja la transacción: Compra, CXP, Inventarios y Equivalencias
+        _factory.ProcesarCompra(compra);
+    }
+
+    public void AbonarAFactura(PagoCxpDTO pago)
+    {
+        if (pago.Monto <= 0)
+            throw new Exception("El monto del abono debe ser mayor a cero.");
+
+        if (pago.CompraId <= 0)
+            throw new Exception("Debe especificar una compra válida para aplicar el pago.");
+
+        _factory.RegistrarPagoCxp(pago);
+    }
+
+    public List<DeudaConsultaDTO> ListarDeudas(string filtro)
+    {
+        return _factory.BuscarDeudas(filtro?.Trim() ?? "");
+    }
+
+    public List<PagoHistorialDTO> ListarHistorialDePagos(int compraId)
+    {
+        if (compraId <= 0)
+            throw new Exception("El ID de la compra proporcionado no es válido.");
+
+        return _factory.ObtenerHistorialPagos(compraId);
+    }
+
+    // --- NUEVO MÉTODO: RESUMEN GLOBAL PARA DASHBOARD ---
+    public ResumenCxpDTO ObtenerResumenCxp()
+    {
+        return _factory.ObtenerResumenGeneralCxp();
+    }
+
+    public void AnularCompraExistente(int compraId, int usuarioId)
+    {
+        _factory.AnularCompra(compraId, usuarioId);
+    }
+
+    public List<AlertaPagoDTO> ListarAlertasPagos()
+    {
+        return _factory.ObtenerAlertasPagos();
     }
 }.
  
@@ -1446,6 +1703,134 @@ public class VentaService(VentaFactory ventaFactory, ClienteFactory cliFactory, 
         }
 
         return consecutivo;
+    }
+}.
+ 
+--- RUTA: C:\Users\Luis\source\repos\Integra\IntegraPro\IntegraPro.AppLogic\Services\XmlParserService.cs --- 
+--- NOMBRE: XmlParserService.cs --- 
+ 
+﻿using System.Xml.Linq;
+using System.Globalization;
+using Microsoft.Data.SqlClient;
+using IntegraPro.DTO.Models;
+
+namespace IntegraPro.AppLogic.Services;
+
+public class XmlParserService(string connectionString)
+{
+    private readonly string _connectionString = connectionString;
+
+    public XmlPreprocesoDTO ProcesarFacturaCR(string xmlContent)
+    {
+        XDocument doc = XDocument.Parse(xmlContent);
+        XNamespace ns = doc.Root.GetDefaultNamespace();
+
+        var emisor = doc.Descendants(ns + "Emisor").FirstOrDefault();
+
+        // Extracción de datos básicos
+        var cedulaXml = emisor?.Element(ns + "Identificacion")?.Element(ns + "Numero")?.Value;
+        var nombreXml = emisor?.Element(ns + "Nombre")?.Value;
+
+        // Extracción de contacto
+        var nodoTel = emisor?.Element(ns + "Telefono");
+        var telefonoXml = nodoTel != null
+            ? $"{nodoTel.Element(ns + "CodigoPais")?.Value}{nodoTel.Element(ns + "NumTelefono")?.Value}"
+            : null;
+        var correoXml = emisor?.Element(ns + "CorreoElectronico")?.Value;
+
+        // 1. Garantizar proveedor con datos de contacto
+        int proveedorIdInterno = ObtenerORegistrarProveedor(cedulaXml, nombreXml, telefonoXml, correoXml);
+
+        var resultado = new XmlPreprocesoDTO
+        {
+            NumeroFactura = doc.Descendants(ns + "NumeroConsecutivo").FirstOrDefault()?.Value,
+            FechaEmision = DateTime.TryParse(doc.Descendants(ns + "FechaEmision").FirstOrDefault()?.Value, out var fecha) ? fecha : DateTime.Now,
+            ProveedorCedula = cedulaXml,
+            ProveedorNombre = nombreXml,
+            ProveedorId = proveedorIdInterno
+        };
+
+        foreach (var linea in doc.Descendants(ns + "LineaDetalle"))
+        {
+            string cabys = linea.Element(ns + "Codigo")?.Value
+                          ?? linea.Element(ns + "CodigoCABYS")?.Value
+                          ?? "";
+
+            var sugerencia = BuscarEquivalencia(proveedorIdInterno, cabys);
+
+            resultado.Lineas.Add(new LineaPreprocesoDTO
+            {
+                DetalleXml = linea.Element(ns + "Detalle")?.Value,
+                CodigoCabys = cabys,
+                Cantidad = decimal.Parse(linea.Element(ns + "Cantidad")?.Value ?? "0", CultureInfo.InvariantCulture),
+                PrecioUnitario = decimal.Parse(linea.Element(ns + "PrecioUnitario")?.Value ?? "0", CultureInfo.InvariantCulture),
+                MontoImpuesto = decimal.Parse(linea.Descendants(ns + "Monto").FirstOrDefault()?.Value ?? "0", CultureInfo.InvariantCulture),
+                TotalLinea = decimal.Parse(linea.Element(ns + "MontoTotalLinea")?.Value ?? "0", CultureInfo.InvariantCulture),
+                ProductoIdSugerido = sugerencia.id,
+                ProductoNombreSugerido = sugerencia.nombre
+            });
+        }
+        return resultado;
+    }
+
+    private int ObtenerORegistrarProveedor(string? cedula, string? nombre, string? telefono, string? correo)
+    {
+        if (string.IsNullOrEmpty(cedula)) return 0;
+
+        string cedulaLimpia = cedula.Replace("-", "").Trim();
+
+        using var conn = new SqlConnection(_connectionString);
+        conn.Open();
+
+        string sqlBusqueda = "SELECT id FROM PROVEEDOR WHERE REPLACE(identificacion, '-', '') = @ced";
+        using (var cmdBusqueda = new SqlCommand(sqlBusqueda, conn))
+        {
+            cmdBusqueda.Parameters.AddWithValue("@ced", cedulaLimpia);
+            var result = cmdBusqueda.ExecuteScalar();
+            if (result != null) return Convert.ToInt32(result);
+        }
+
+        // Insertar con Teléfono y Correo (Asegúrate de que estas columnas existan en tu tabla)
+        string sqlInsert = @"INSERT INTO PROVEEDOR (nombre, identificacion, telefono, correo, activo) 
+                             VALUES (@nom, @ced, @tel, @eml, 1);
+                             SELECT SCOPE_IDENTITY();";
+
+        using (var cmdInsert = new SqlCommand(sqlInsert, conn))
+        {
+            cmdInsert.Parameters.AddWithValue("@nom", nombre ?? "Proveedor Nuevo (XML)");
+            cmdInsert.Parameters.AddWithValue("@ced", cedulaLimpia);
+            cmdInsert.Parameters.AddWithValue("@tel", (object?)telefono ?? DBNull.Value);
+            cmdInsert.Parameters.AddWithValue("@eml", (object?)correo ?? DBNull.Value);
+            return Convert.ToInt32(cmdInsert.ExecuteScalar());
+        }
+    }
+
+    private (int? id, string? nombre) BuscarEquivalencia(int proveedorId, string cabys)
+    {
+        if (proveedorId == 0 || string.IsNullOrEmpty(cabys)) return (null, null);
+
+        using var conn = new SqlConnection(_connectionString);
+        string sql = @"SELECT P.id, P.nombre 
+                       FROM PRODUCTO_EQUIVALENCIA E 
+                       INNER JOIN PRODUCTO P ON E.producto_id = P.id 
+                       WHERE E.proveedor_id = @provId AND E.codigo_xml = @cabys";
+
+        using var cmd = new SqlCommand(sql, conn);
+        cmd.Parameters.AddWithValue("@provId", proveedorId);
+        cmd.Parameters.AddWithValue("@cabys", cabys);
+
+        try
+        {
+            conn.Open();
+            using var reader = cmd.ExecuteReader();
+            if (reader.Read())
+            {
+                return (Convert.ToInt32(reader["id"]), reader["nombre"].ToString());
+            }
+        }
+        catch { }
+
+        return (null, null);
     }
 }.
  
@@ -1989,6 +2374,330 @@ public class ClienteFactory(string connectionString) : MasterDao(connectionStrin
     }
 }.
  
+--- RUTA: C:\Users\Luis\source\repos\Integra\IntegraPro\IntegraPro.DataAccess\Factory\CompraFactory.cs --- 
+--- NOMBRE: CompraFactory.cs --- 
+ 
+﻿using Microsoft.Data.SqlClient;
+using IntegraPro.DTO.Models;
+using System.Data;
+
+namespace IntegraPro.DataAccess.Factory;
+
+public class CompraFactory(string connectionString)
+{
+    private readonly string _connectionString = connectionString;
+
+    public void ProcesarCompra(CompraDTO compra)
+    {
+        using var conn = new SqlConnection(_connectionString);
+        conn.Open();
+        using var trans = conn.BeginTransaction();
+        try
+        {
+            // 1. Insertar Encabezado
+            string sqlEnc = @"INSERT INTO COMPRA_ENCABEZADO 
+                (proveedor_id, sucursal_id, usuario_id, numero_factura_proveedor, fecha_compra, subtotal, total_impuestos, total_compra, notas, estado, tipo_pago) 
+                VALUES (@prov, @suc, @usu, @num, @fecC, @sub, @imp, @tot, @not, 'Procesada', @tPag);
+                SELECT SCOPE_IDENTITY();";
+
+            using var cmdEnc = new SqlCommand(sqlEnc, conn, trans);
+            cmdEnc.Parameters.AddWithValue("@prov", compra.ProveedorId);
+            cmdEnc.Parameters.AddWithValue("@suc", compra.SucursalId);
+            cmdEnc.Parameters.AddWithValue("@usu", compra.UsuarioId);
+            cmdEnc.Parameters.AddWithValue("@num", (object?)compra.NumeroFacturaProveedor ?? DBNull.Value);
+            cmdEnc.Parameters.AddWithValue("@fecC", compra.FechaCompra);
+            cmdEnc.Parameters.AddWithValue("@sub", compra.Subtotal);
+            cmdEnc.Parameters.AddWithValue("@imp", compra.TotalImpuestos);
+            cmdEnc.Parameters.AddWithValue("@tot", compra.TotalCompra);
+            cmdEnc.Parameters.AddWithValue("@not", (object?)compra.Notas ?? DBNull.Value);
+            cmdEnc.Parameters.AddWithValue("@tPag", compra.TipoPago);
+
+            int compraId = Convert.ToInt32(cmdEnc.ExecuteScalar());
+
+            // 2. Lógica de Cuenta por Pagar (CXP)
+            if (compra.TipoPago == "Credito")
+            {
+                string sqlCxp = @"INSERT INTO CUENTA_PAGAR 
+                    (compra_id, proveedor_id, monto_total, saldo_pendiente, fecha_vencimiento, estado) 
+                    VALUES (@cId, @pId, @tot, @tot, @fVen, 'Pendiente')";
+
+                using var cmdCxp = new SqlCommand(sqlCxp, conn, trans);
+                cmdCxp.Parameters.AddWithValue("@cId", compraId);
+                cmdCxp.Parameters.AddWithValue("@pId", compra.ProveedorId);
+                cmdCxp.Parameters.AddWithValue("@tot", compra.TotalCompra);
+                cmdCxp.Parameters.AddWithValue("@fVen", compra.FechaCompra.AddDays(compra.DiasCredito));
+                cmdCxp.ExecuteNonQuery();
+            }
+
+            // 3. Detalles, Inventario y Equivalencias
+            foreach (var det in compra.Detalles)
+            {
+                string sqlDet = "INSERT INTO COMPRA_DETALLE (compra_id, producto_id, cantidad, costo_unitario_neto, monto_impuesto, total_linea) VALUES (@cId, @pId, @can, @cos, @mImp, @totL)";
+                using var cmdDet = new SqlCommand(sqlDet, conn, trans);
+                cmdDet.Parameters.AddWithValue("@cId", compraId);
+                cmdDet.Parameters.AddWithValue("@pId", det.ProductoId);
+                cmdDet.Parameters.AddWithValue("@can", det.Cantidad);
+                cmdDet.Parameters.AddWithValue("@cos", det.CostoUnitarioNeto);
+                cmdDet.Parameters.AddWithValue("@mImp", det.MontoImpuesto);
+                cmdDet.Parameters.AddWithValue("@totL", det.TotalLinea);
+                cmdDet.ExecuteNonQuery();
+
+                string sqlMov = "INSERT INTO MOVIMIENTO_INVENTARIO (producto_id, usuario_id, fecha, tipo_movimiento, cantidad, documento_referencia, notas) VALUES (@pId, @uId, GETDATE(), 'Entrada', @can, @ref, 'Compra Recibida')";
+                using var cmdMov = new SqlCommand(sqlMov, conn, trans);
+                cmdMov.Parameters.AddWithValue("@pId", det.ProductoId);
+                cmdMov.Parameters.AddWithValue("@uId", compra.UsuarioId);
+                cmdMov.Parameters.AddWithValue("@can", det.Cantidad);
+                cmdMov.Parameters.AddWithValue("@ref", "FAC-" + (compra.NumeroFacturaProveedor ?? "S/N"));
+                cmdMov.ExecuteNonQuery();
+
+                string sqlCosto = "UPDATE PRODUCTO SET costo_actual = @nCos WHERE id = @pId";
+                using var cmdCosto = new SqlCommand(sqlCosto, conn, trans);
+                cmdCosto.Parameters.AddWithValue("@nCos", det.CostoUnitarioNeto);
+                cmdCosto.Parameters.AddWithValue("@pId", det.ProductoId);
+                cmdCosto.ExecuteNonQuery();
+
+                if (!string.IsNullOrEmpty(det.CodigoCabys) && det.ProductoId > 0)
+                {
+                    string sqlEquiv = @"
+                        IF EXISTS (SELECT 1 FROM PRODUCTO_EQUIVALENCIA WHERE proveedor_id = @provId AND codigo_xml = @codXml)
+                            UPDATE PRODUCTO_EQUIVALENCIA SET producto_id = @prodId WHERE proveedor_id = @provId AND codigo_xml = @codXml
+                        ELSE
+                            INSERT INTO PRODUCTO_EQUIVALENCIA (proveedor_id, codigo_xml, producto_id) VALUES (@provId, @codXml, @prodId)";
+
+                    using var cmdEquiv = new SqlCommand(sqlEquiv, conn, trans);
+                    cmdEquiv.Parameters.AddWithValue("@provId", compra.ProveedorId);
+                    cmdEquiv.Parameters.AddWithValue("@codXml", det.CodigoCabys);
+                    cmdEquiv.Parameters.AddWithValue("@prodId", det.ProductoId);
+                    cmdEquiv.ExecuteNonQuery();
+                }
+            }
+            trans.Commit();
+        }
+        catch { trans.Rollback(); throw; }
+    }
+
+    public void RegistrarPagoCxp(PagoCxpDTO pago)
+    {
+        using var conn = new SqlConnection(_connectionString);
+        conn.Open();
+
+        string sqlCheck = "SELECT saldo_pendiente FROM CUENTA_PAGAR WHERE compra_id = @cId AND estado != 'Anulado'";
+        using (var cmdCheck = new SqlCommand(sqlCheck, conn))
+        {
+            cmdCheck.Parameters.AddWithValue("@cId", pago.CompraId);
+            var result = cmdCheck.ExecuteScalar();
+
+            if (result == null)
+                throw new Exception("Error: Esta compra no genera deuda (Posible compra de contado o inexistente).");
+
+            decimal saldoActual = Convert.ToDecimal(result);
+            if (saldoActual <= 0)
+                throw new Exception("Aviso: Esta factura ya ha sido pagada en su totalidad.");
+
+            if (pago.Monto > saldoActual)
+                throw new Exception($"Error: El monto ingresado ({pago.Monto}) supera el saldo pendiente ({saldoActual}).");
+        }
+
+        using var trans = conn.BeginTransaction();
+        try
+        {
+            string sqlHistorial = @"INSERT INTO PAGO_CXP_HISTORIAL 
+                (compra_id, usuario_id, monto, fecha_pago, numero_referencia, notas) 
+                VALUES (@cId, @uId, @monto, GETDATE(), @ref, @not)";
+
+            using (var cmdHist = new SqlCommand(sqlHistorial, conn, trans))
+            {
+                cmdHist.Parameters.AddWithValue("@cId", pago.CompraId);
+                cmdHist.Parameters.AddWithValue("@uId", pago.UsuarioId);
+                cmdHist.Parameters.AddWithValue("@monto", pago.Monto);
+                cmdHist.Parameters.AddWithValue("@ref", (object?)pago.NumeroReferencia ?? DBNull.Value);
+                cmdHist.Parameters.AddWithValue("@not", (object?)pago.Notas ?? DBNull.Value);
+                cmdHist.ExecuteNonQuery();
+            }
+
+            string sqlUpdateCxp = @"UPDATE CUENTA_PAGAR 
+                SET saldo_pendiente = saldo_pendiente - @monto,
+                    estado = CASE WHEN (saldo_pendiente - @monto) <= 0 THEN 'Pagada' ELSE 'Pendiente' END
+                WHERE compra_id = @cId";
+
+            using (var cmdUp = new SqlCommand(sqlUpdateCxp, conn, trans))
+            {
+                cmdUp.Parameters.AddWithValue("@monto", pago.Monto);
+                cmdUp.Parameters.AddWithValue("@cId", pago.CompraId);
+                cmdUp.ExecuteNonQuery();
+            }
+
+            trans.Commit();
+        }
+        catch
+        {
+            trans.Rollback();
+            throw;
+        }
+    }
+
+    public void AnularCompra(int compraId, int usuarioId)
+    {
+        using var conn = new SqlConnection(_connectionString);
+        conn.Open();
+        using var trans = conn.BeginTransaction();
+        try
+        {
+            var detalles = new List<(int pId, decimal cant, string refProv)>();
+            using (var cmdGet = new SqlCommand("SELECT D.producto_id, D.cantidad, E.numero_factura_proveedor FROM COMPRA_DETALLE D JOIN COMPRA_ENCABEZADO E ON D.compra_id = E.id WHERE E.id = @id AND E.estado = 'Procesada'", conn, trans))
+            {
+                cmdGet.Parameters.AddWithValue("@id", compraId);
+                using var reader = cmdGet.ExecuteReader();
+                while (reader.Read()) detalles.Add(((int)reader[0], (decimal)reader[1], reader[2]?.ToString() ?? "S/N"));
+            }
+
+            if (detalles.Count == 0) throw new Exception("Compra no encontrada o ya está anulada.");
+
+            foreach (var det in detalles)
+            {
+                string sqlMov = "INSERT INTO MOVIMIENTO_INVENTARIO (producto_id, usuario_id, fecha, tipo_movimiento, cantidad, documento_referencia, notas) VALUES (@pId, @uId, GETDATE(), 'Salida', @can, @ref, 'ANULACIÓN DE COMPRA')";
+                using var cmdMov = new SqlCommand(sqlMov, conn, trans);
+                cmdMov.Parameters.AddWithValue("@pId", det.pId);
+                cmdMov.Parameters.AddWithValue("@uId", usuarioId);
+                cmdMov.Parameters.AddWithValue("@can", det.cant);
+                cmdMov.Parameters.AddWithValue("@ref", "ANUL-" + det.refProv);
+                cmdMov.ExecuteNonQuery();
+            }
+
+            string sqlAnuCxp = "UPDATE CUENTA_PAGAR SET estado = 'Anulado', saldo_pendiente = 0 WHERE compra_id = @cId";
+            using var cmdAnuCxp = new SqlCommand(sqlAnuCxp, conn, trans);
+            cmdAnuCxp.Parameters.AddWithValue("@cId", compraId);
+            cmdAnuCxp.ExecuteNonQuery();
+
+            using (var cmdUp = new SqlCommand("UPDATE COMPRA_ENCABEZADO SET estado = 'Anulada' WHERE id = @id", conn, trans))
+            {
+                cmdUp.Parameters.AddWithValue("@id", compraId);
+                cmdUp.ExecuteNonQuery();
+            }
+
+            trans.Commit();
+        }
+        catch { trans.Rollback(); throw; }
+    }
+
+    public List<AlertaPagoDTO> ObtenerAlertasPagos()
+    {
+        var alertas = new List<AlertaPagoDTO>();
+        using var conn = new SqlConnection(_connectionString);
+        using var cmd = new SqlCommand("SELECT * FROM VW_ALERTA_CUENTAS_PAGAR_PROXIMAS ORDER BY fecha_vencimiento ASC", conn);
+        conn.Open();
+        using var reader = cmd.ExecuteReader();
+        while (reader.Read())
+        {
+            alertas.Add(new AlertaPagoDTO
+            {
+                Id = (int)reader["id"],
+                ProveedorNombre = reader["proveedor_nombre"].ToString()!,
+                SaldoPendiente = (decimal)reader["saldo_pendiente"],
+                FechaVencimiento = (DateTime)reader["fecha_vencimiento"],
+                DiasParaVencimiento = (int)reader["dias_para_vencimiento"],
+                Urgencia = reader["urgencia"].ToString()!
+            });
+        }
+        return alertas;
+    }
+
+    public List<DeudaConsultaDTO> BuscarDeudas(string filtro)
+    {
+        var lista = new List<DeudaConsultaDTO>();
+        using var conn = new SqlConnection(_connectionString);
+
+        string sql = @"SELECT * FROM VW_CONSULTA_DEUDAS 
+                       WHERE ProveedorCedula LIKE @f 
+                          OR ProveedorNombre LIKE @f 
+                          OR NumeroFactura LIKE @f
+                       ORDER BY FechaVencimiento ASC";
+
+        using var cmd = new SqlCommand(sql, conn);
+        cmd.Parameters.AddWithValue("@f", $"%{filtro}%");
+
+        conn.Open();
+        using var reader = cmd.ExecuteReader();
+        while (reader.Read())
+        {
+            lista.Add(new DeudaConsultaDTO
+            {
+                DeudaId = (int)reader["DeudaId"],
+                CompraId = (int)reader["CompraId"],
+                ProveedorCedula = reader["ProveedorCedula"].ToString()!,
+                ProveedorNombre = reader["ProveedorNombre"].ToString()!,
+                NumeroFactura = reader["NumeroFactura"].ToString()!,
+                FechaCompra = (DateTime)reader["FechaCompra"],
+                MontoOriginal = (decimal)reader["MontoOriginal"],
+                SaldoActual = (decimal)reader["SaldoActual"],
+                FechaVencimiento = (DateTime)reader["FechaVencimiento"],
+                EstadoDeuda = reader["EstadoDeuda"].ToString()!
+            });
+        }
+        return lista;
+    }
+
+    public List<PagoHistorialDTO> ObtenerHistorialPagos(int compraId)
+    {
+        var historial = new List<PagoHistorialDTO>();
+        using var conn = new SqlConnection(_connectionString);
+
+        string sql = @"SELECT H.id, H.monto, H.fecha_pago, H.numero_referencia, H.notas, U.nombre_completo as nombre_usuario
+                       FROM PAGO_CXP_HISTORIAL H
+                       JOIN USUARIO U ON H.usuario_id = U.id
+                       WHERE H.compra_id = @cId
+                       ORDER BY H.fecha_pago DESC";
+
+        using var cmd = new SqlCommand(sql, conn);
+        cmd.Parameters.AddWithValue("@cId", compraId);
+
+        conn.Open();
+        using var reader = cmd.ExecuteReader();
+        while (reader.Read())
+        {
+            historial.Add(new PagoHistorialDTO
+            {
+                Id = (int)reader["id"],
+                Monto = (decimal)reader["monto"],
+                FechaPago = (DateTime)reader["fecha_pago"],
+                NumeroReferencia = reader["numero_referencia"]?.ToString(),
+                Notas = reader["notas"]?.ToString(),
+                NombreUsuario = reader["nombre_usuario"]?.ToString()
+            });
+        }
+        return historial;
+    }
+
+    // --- NUEVO: RESUMEN GLOBAL DE CXP ---
+    public ResumenCxpDTO ObtenerResumenGeneralCxp()
+    {
+        using var conn = new SqlConnection(_connectionString);
+        string sql = @"SELECT 
+                        SUM(saldo_pendiente) as TotalGlobal,
+                        COUNT(id) as TotalFacturas,
+                        COUNT(DISTINCT proveedor_id) as TotalProveedores,
+                        MIN(fecha_vencimiento) as ProximaFecha
+                       FROM CUENTA_PAGAR 
+                       WHERE estado = 'Pendiente' AND saldo_pendiente > 0";
+
+        conn.Open();
+        using var cmd = new SqlCommand(sql, conn);
+        using var reader = cmd.ExecuteReader();
+
+        if (reader.Read())
+        {
+            return new ResumenCxpDTO
+            {
+                TotalDeudaGlobal = reader["TotalGlobal"] != DBNull.Value ? (decimal)reader["TotalGlobal"] : 0,
+                FacturasPendientes = reader["TotalFacturas"] != DBNull.Value ? (int)reader["TotalFacturas"] : 0,
+                ProveedoresAQuienesSeDebe = reader["TotalProveedores"] != DBNull.Value ? (int)reader["TotalProveedores"] : 0,
+                FechaProximoVencimiento = reader["ProximaFecha"] != DBNull.Value ? (DateTime)reader["ProximaFecha"] : null
+            };
+        }
+        return new ResumenCxpDTO();
+    }
+}.
+ 
 --- RUTA: C:\Users\Luis\source\repos\Integra\IntegraPro\IntegraPro.DataAccess\Factory\ConfiguracionFactory.cs --- 
 --- NOMBRE: ConfiguracionFactory.cs --- 
  
@@ -2281,6 +2990,91 @@ public class ProductoFactory : MasterDao
             });
         }
         return lista;
+    }
+}.
+ 
+--- RUTA: C:\Users\Luis\source\repos\Integra\IntegraPro\IntegraPro.DataAccess\Factory\ProveedorFactory.cs --- 
+--- NOMBRE: ProveedorFactory.cs --- 
+ 
+﻿using Microsoft.Data.SqlClient;
+using IntegraPro.DTO.Models;
+using System.Data;
+
+namespace IntegraPro.DataAccess.Factory;
+
+public class ProveedorFactory(string connectionString)
+{
+    private readonly string _connectionString = connectionString;
+
+    public List<ProveedorDTO> ObtenerTodos()
+    {
+        var lista = new List<ProveedorDTO>();
+        using var conn = new SqlConnection(_connectionString);
+        using var cmd = new SqlCommand("SELECT * FROM PROVEEDOR", conn);
+        conn.Open();
+        using var reader = cmd.ExecuteReader();
+        while (reader.Read())
+        {
+            lista.Add(new ProveedorDTO
+            {
+                Id = (int)reader["id"],
+                Identificacion = reader["identificacion"].ToString()!,
+                Nombre = reader["nombre"].ToString()!,
+                Correo = reader["correo"]?.ToString(),
+                Telefono = reader["telefono"]?.ToString(),
+                Activo = (bool)reader["activo"]
+            });
+        }
+        return lista;
+    }
+
+    public void Crear(ProveedorDTO proveedor)
+    {
+        using var conn = new SqlConnection(_connectionString);
+        using var cmd = new SqlCommand(
+            "INSERT INTO PROVEEDOR (identificacion, nombre, correo, telefono, activo) VALUES (@ide, @nom, @cor, @tel, @act)", conn);
+
+        cmd.Parameters.AddWithValue("@ide", proveedor.Identificacion);
+        cmd.Parameters.AddWithValue("@nom", proveedor.Nombre);
+        cmd.Parameters.AddWithValue("@cor", (object?)proveedor.Correo ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("@tel", (object?)proveedor.Telefono ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("@act", proveedor.Activo);
+
+        conn.Open();
+        cmd.ExecuteNonQuery();
+    }
+
+    public void Actualizar(ProveedorDTO proveedor)
+    {
+        using var conn = new SqlConnection(_connectionString);
+        using var cmd = new SqlCommand(
+            @"UPDATE PROVEEDOR 
+              SET identificacion = @ide, nombre = @nom, correo = @cor, telefono = @tel, activo = @act 
+              WHERE id = @id", conn);
+
+        cmd.Parameters.AddWithValue("@id", proveedor.Id);
+        cmd.Parameters.AddWithValue("@ide", proveedor.Identificacion);
+        cmd.Parameters.AddWithValue("@nom", proveedor.Nombre);
+        cmd.Parameters.AddWithValue("@cor", (object?)proveedor.Correo ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("@tel", (object?)proveedor.Telefono ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("@act", proveedor.Activo);
+
+        conn.Open();
+        cmd.ExecuteNonQuery();
+    }
+
+    public void Eliminar(int id)
+    {
+        using var conn = new SqlConnection(_connectionString);
+        // OPCIÓN 1: Borrado Lógico (Recomendado para ERP)
+        using var cmd = new SqlCommand("UPDATE PROVEEDOR SET activo = 0 WHERE id = @id", conn);
+
+        // OPCIÓN 2: Borrado Físico (Descomenta la línea de abajo si prefieres borrar de verdad)
+        // using var cmd = new SqlCommand("DELETE FROM PROVEEDOR WHERE id = @id", conn);
+
+        cmd.Parameters.AddWithValue("@id", id);
+        conn.Open();
+        cmd.ExecuteNonQuery();
     }
 }.
  
@@ -2616,7 +3410,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("IntegraPro.DataAccess")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+7f305de852982f374155bcd2c0c108960c4ac95d")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+93f2d1c76915b33e444d362ddb68d39ad359438c")]
 [assembly: System.Reflection.AssemblyProductAttribute("IntegraPro.DataAccess")]
 [assembly: System.Reflection.AssemblyTitleAttribute("IntegraPro.DataAccess")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
@@ -2662,6 +3456,21 @@ public class AbonoDTO
     public decimal MontoAbonado { get; set; }
     public string MedioPago { get; set; } = "Efectivo";
     public string? Referencia { get; set; }
+}.
+ 
+--- RUTA: C:\Users\Luis\source\repos\Integra\IntegraPro\IntegraPro.DTO\Models\AlertaPagoDTO.cs --- 
+--- NOMBRE: AlertaPagoDTO.cs --- 
+ 
+﻿namespace IntegraPro.DTO.Models;
+
+public class AlertaPagoDTO
+{
+    public int Id { get; set; }
+    public string ProveedorNombre { get; set; } = string.Empty;
+    public decimal SaldoPendiente { get; set; }
+    public DateTime FechaVencimiento { get; set; }
+    public int DiasParaVencimiento { get; set; }
+    public string Urgencia { get; set; } = string.Empty;
 }.
  
 --- RUTA: C:\Users\Luis\source\repos\Integra\IntegraPro\IntegraPro.DTO\Models\CajaDTO.cs --- 
@@ -2711,6 +3520,56 @@ public class ClienteDTO
     public bool Activo { get; set; } = true;
 }.
  
+--- RUTA: C:\Users\Luis\source\repos\Integra\IntegraPro\IntegraPro.DTO\Models\CompraDTO.cs --- 
+--- NOMBRE: CompraDTO.cs --- 
+ 
+﻿namespace IntegraPro.DTO.Models;
+
+public class CompraDTO
+{
+    // --- Encabezado ---
+    public int Id { get; set; }
+    public int ProveedorId { get; set; }
+    public int SucursalId { get; set; }
+    public int UsuarioId { get; set; }
+    public string? NumeroFacturaProveedor { get; set; }
+    public DateTime FechaCompra { get; set; }
+    public decimal Subtotal { get; set; }
+    public decimal TotalImpuestos { get; set; }
+    public decimal TotalCompra { get; set; }
+    public string? Notas { get; set; }
+
+    // --- Lógica de Negocio y Estado ---
+    public string Estado { get; set; } = "Procesada";
+    public string TipoPago { get; set; } = "Contado";
+    public int DiasCredito { get; set; }
+
+    // --- Detalle Unificado ---
+    public List<CompraDetalleDTO> Detalles { get; set; } = new();
+}
+
+public class CompraDetalleDTO
+{
+    public int ProductoId { get; set; }
+    public decimal Cantidad { get; set; }
+    public decimal CostoUnitarioNeto { get; set; }
+    public decimal MontoImpuesto { get; set; }
+    public decimal TotalLinea { get; set; }
+
+    // --- IMPORTANTE: Propiedades para el flujo XML ---
+    /// <summary>
+    /// Código CABYS o Comercial que viene en el XML. 
+    /// Se usa para crear la equivalencia automática.
+    /// </summary>
+    public string? CodigoCabys { get; set; }
+
+    /// <summary>
+    /// Nombre tal cual viene en el XML (ej: "ENERGIA"). 
+    /// Ayuda al usuario a identificar el producto en la pantalla de mapeo.
+    /// </summary>
+    public string? DetalleOriginalXml { get; set; }
+}.
+ 
 --- RUTA: C:\Users\Luis\source\repos\Integra\IntegraPro\IntegraPro.DTO\Models\ConfiguracionDTO.cs --- 
 --- NOMBRE: ConfiguracionDTO.cs --- 
  
@@ -2739,6 +3598,25 @@ public class LicenciaDTO
     public string Estado { get; set; } = "Demo";
 }
 .
+ 
+--- RUTA: C:\Users\Luis\source\repos\Integra\IntegraPro\IntegraPro.DTO\Models\DeudaConsultaDTO.cs --- 
+--- NOMBRE: DeudaConsultaDTO.cs --- 
+ 
+﻿namespace IntegraPro.DTO.Models;
+
+public class DeudaConsultaDTO
+{
+    public int DeudaId { get; set; }
+    public int CompraId { get; set; }
+    public string ProveedorCedula { get; set; } = string.Empty;
+    public string ProveedorNombre { get; set; } = string.Empty;
+    public string NumeroFactura { get; set; } = string.Empty;
+    public DateTime FechaCompra { get; set; }
+    public decimal MontoOriginal { get; set; }
+    public decimal SaldoActual { get; set; }
+    public DateTime FechaVencimiento { get; set; }
+    public string EstadoDeuda { get; set; } = string.Empty;
+}.
  
 --- RUTA: C:\Users\Luis\source\repos\Integra\IntegraPro\IntegraPro.DTO\Models\FacturaDTO.cs --- 
 --- NOMBRE: FacturaDTO.cs --- 
@@ -2802,6 +3680,35 @@ public class MovimientoInventarioDTO
     public string? Notas { get; set; }
 }.
  
+--- RUTA: C:\Users\Luis\source\repos\Integra\IntegraPro\IntegraPro.DTO\Models\PagoCxpDTO.cs --- 
+--- NOMBRE: PagoCxpDTO.cs --- 
+ 
+﻿namespace IntegraPro.DTO.Models;
+
+public class PagoCxpDTO
+{
+    public int CompraId { get; set; }
+    public int UsuarioId { get; set; }
+    public decimal Monto { get; set; }
+    public string? NumeroReferencia { get; set; }
+    public string? Notas { get; set; }
+}.
+ 
+--- RUTA: C:\Users\Luis\source\repos\Integra\IntegraPro\IntegraPro.DTO\Models\PagoHistorialDTO.cs --- 
+--- NOMBRE: PagoHistorialDTO.cs --- 
+ 
+﻿namespace IntegraPro.DTO.Models;
+
+public class PagoHistorialDTO
+{
+    public int Id { get; set; }
+    public decimal Monto { get; set; }
+    public DateTime FechaPago { get; set; }
+    public string? NumeroReferencia { get; set; }
+    public string? Notas { get; set; }
+    public string? NombreUsuario { get; set; } // Para saber quién aplicó el pago
+}.
+ 
 --- RUTA: C:\Users\Luis\source\repos\Integra\IntegraPro\IntegraPro.DTO\Models\ProductoDTO.cs --- 
 --- NOMBRE: ProductoDTO.cs --- 
  
@@ -2844,6 +3751,35 @@ public class ProductoComposicionDTO
     public decimal CantidadNecesaria { get; set; }
 }.
  
+--- RUTA: C:\Users\Luis\source\repos\Integra\IntegraPro\IntegraPro.DTO\Models\ProveedorDTO.cs --- 
+--- NOMBRE: ProveedorDTO.cs --- 
+ 
+﻿namespace IntegraPro.DTO.Models;
+
+public class ProveedorDTO
+{
+    public int Id { get; set; }
+    public string Identificacion { get; set; } = string.Empty;
+    public string Nombre { get; set; } = string.Empty;
+    public string? Correo { get; set; }
+    public string? Telefono { get; set; }
+    public bool Activo { get; set; } = true;
+}.
+ 
+--- RUTA: C:\Users\Luis\source\repos\Integra\IntegraPro\IntegraPro.DTO\Models\ResumenCxpDTO.cs --- 
+--- NOMBRE: ResumenCxpDTO.cs --- 
+ 
+﻿namespace IntegraPro.DTO.Models;
+
+public class ResumenCxpDTO
+{
+    public decimal TotalDeudaGlobal { get; set; }
+    public int FacturasPendientes { get; set; }
+    public int ProveedoresAQuienesSeDebe { get; set; }
+    public decimal ProximoVencimientoMonto { get; set; }
+    public DateTime? FechaProximoVencimiento { get; set; }
+}.
+ 
 --- RUTA: C:\Users\Luis\source\repos\Integra\IntegraPro\IntegraPro.DTO\Models\UsuarioDTO.cs --- 
 --- NOMBRE: UsuarioDTO.cs --- 
  
@@ -2871,6 +3807,36 @@ public class LoginRequest
 {
     public string Username { get; set; } = string.Empty;
     public string Password { get; set; } = string.Empty;
+}.
+ 
+--- RUTA: C:\Users\Luis\source\repos\Integra\IntegraPro\IntegraPro.DTO\Models\XmlPreprocesoDTO.cs --- 
+--- NOMBRE: XmlPreprocesoDTO.cs --- 
+ 
+﻿namespace IntegraPro.DTO.Models;
+
+public class XmlPreprocesoDTO
+{
+    public string? NumeroFactura { get; set; }
+    public DateTime FechaEmision { get; set; }
+    public string? ProveedorCedula { get; set; }
+    public string? ProveedorNombre { get; set; }
+
+    // Propiedad añadida para vincular con el ID interno de la DB
+    public int ProveedorId { get; set; }
+
+    public List<LineaPreprocesoDTO> Lineas { get; set; } = new();
+}
+
+public class LineaPreprocesoDTO
+{
+    public string? DetalleXml { get; set; }
+    public string? CodigoCabys { get; set; }
+    public decimal Cantidad { get; set; }
+    public decimal PrecioUnitario { get; set; }
+    public decimal MontoImpuesto { get; set; }
+    public decimal TotalLinea { get; set; }
+    public int? ProductoIdSugerido { get; set; }
+    public string? ProductoNombreSugerido { get; set; }
 }.
  
 --- RUTA: C:\Users\Luis\source\repos\Integra\IntegraPro\IntegraPro.DTO\obj\Debug\net9.0\.NETCoreApp,Version=v9.0.AssemblyAttributes.cs --- 
@@ -2901,7 +3867,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("IntegraPro.DTO")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+7f305de852982f374155bcd2c0c108960c4ac95d")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+93f2d1c76915b33e444d362ddb68d39ad359438c")]
 [assembly: System.Reflection.AssemblyProductAttribute("IntegraPro.DTO")]
 [assembly: System.Reflection.AssemblyTitleAttribute("IntegraPro.DTO")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
