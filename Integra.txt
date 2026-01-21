@@ -17,7 +17,16 @@ string connectionString = builder.Configuration.GetConnectionString("DefaultConn
     ?? "Server=DESKTOP-AR7JSQE\\SQLEXPRESS;Database=ERP_SistemaPro;Integrated Security=SSPI;TrustServerCertificate=True;";
 
 // ==========================================
-// 2. INYECCIÓN DE DEPENDENCIAS (N-Capas)
+// 2. CONFIGURACIÓN DE CORS (Agregado para evitar bloqueos)
+// ==========================================
+builder.Services.AddCors(options => {
+    options.AddPolicy("AllowAll", policy => {
+        policy.AllowAnyOrigin().AllowAnyMethod().AllowAnyHeader();
+    });
+});
+
+// ==========================================
+// 3. INYECCIÓN DE DEPENDENCIAS (N-Capas)
 // ==========================================
 
 // --- Capa de Datos (Factories) ---
@@ -28,7 +37,6 @@ builder.Services.AddScoped(sp => new ConfiguracionFactory(connectionString));
 builder.Services.AddScoped(sp => new InventarioFactory(connectionString));
 builder.Services.AddScoped(sp => new VentaFactory(connectionString));
 builder.Services.AddScoped(sp => new CajaFactory(connectionString));
-// AGREGADO: Necesario para que VentaService valide crédito
 builder.Services.AddScoped(sp => new ClienteFactory(connectionString));
 
 // --- Capa de Lógica (Services) ---
@@ -38,12 +46,12 @@ builder.Services.AddScoped<IProductoService, ProductoService>();
 builder.Services.AddScoped<ICategoriaService, CategoriaService>();
 builder.Services.AddScoped<IInventarioService, InventarioService>();
 
-// AGREGADOS: Registro de Venta y Caja (Dejamos que el contenedor inyecte los Factories)
+// Aquí el contenedor inyectará automáticamente VentaFactory, ClienteFactory y ProductoFactory
 builder.Services.AddScoped<VentaService>();
 builder.Services.AddScoped<CajaService>();
 
 // ==========================================
-// 3. SERVICIOS BASE DE LA API
+// 4. SERVICIOS BASE DE LA API
 // ==========================================
 builder.Services.AddControllers(options =>
 {
@@ -57,15 +65,18 @@ builder.Services.AddSwaggerGen(c =>
     {
         Title = "IntegraPro ERP - Sistema de Gestión General",
         Version = "v1",
-        Description = "API para gestión de inventarios, facturación y licenciamiento con control de hardware."
+        Description = "API para gestión de inventarios, facturación y licenciamiento."
     });
 });
 
 var app = builder.Build();
 
 // ==========================================
-// 4. PIPELINE DE SOLICITUDES (Middlewares)
+// 5. PIPELINE DE SOLICITUDES (Middlewares)
 // ==========================================
+
+// Usar CORS antes de MapControllers
+app.UseCors("AllowAll");
 
 if (app.Environment.IsDevelopment())
 {
@@ -1383,14 +1394,31 @@ using IntegraPro.DTO.Models;
 
 namespace IntegraPro.AppLogic.Services;
 
-public class VentaService(VentaFactory ventaFactory, ClienteFactory cliFactory)
+public class VentaService(VentaFactory ventaFactory, ClienteFactory cliFactory, ProductoFactory prodFactory)
 {
     private readonly VentaFactory _ventaFactory = ventaFactory;
     private readonly ClienteFactory _cliFactory = cliFactory;
+    private readonly ProductoFactory _prodFactory = prodFactory;
 
     public string ProcesarVenta(FacturaDTO factura)
     {
-        // 1. VALIDACIÃ“N DE CRÃ‰DITO
+        // 1. VALIDACIÃ“N DE STOCK (Evitar negativos)
+        foreach (var det in factura.Detalles)
+        {
+            // USAMOS 'GetById' que es el nombre real en tu ProductoFactory
+            var producto = _prodFactory.GetById(det.ProductoId);
+
+            if (producto == null)
+                throw new Exception($"El producto con ID {det.ProductoId} no existe.");
+
+            if (producto.Existencia < det.Cantidad)
+            {
+                throw new Exception($"Stock insuficiente para '{producto.Nombre}'. " +
+                                    $"Solicitado: {det.Cantidad:N2}, Disponible: {producto.Existencia:N2}.");
+            }
+        }
+
+        // 2. VALIDACIÃ“N DE CRÃ‰DITO
         if (factura.CondicionVenta.Equals("Credito", StringComparison.OrdinalIgnoreCase))
         {
             var (saldoActual, limite, activo) = _cliFactory.ObtenerEstadoCredito(factura.ClienteId);
@@ -1407,16 +1435,11 @@ public class VentaService(VentaFactory ventaFactory, ClienteFactory cliFactory)
             }
         }
 
-        // 2. EJECUCIÃ“N TRANSACCIONAL
-        // El VentaFactory ahora se encarga de:
-        // - Crear Encabezado
-        // - Crear Detalle
-        // - Crear Movimiento de Inventario (Kardex)
-        // - TODO dentro de una sola transacciÃ³n SQL.
+        // 3. EJECUCIÃ“N TRANSACCIONAL ÃšNICA
+        // Al llegar aquÃ­, ya validamos que hay stock y crÃ©dito.
         string consecutivo = _ventaFactory.CrearFactura(factura);
 
-        // 3. ACTUALIZAR SALDO DEL CLIENTE (Solo si la venta fue exitosa y es a crÃ©dito)
-        // Se hace fuera de la transacciÃ³n principal para no bloquear la tabla de clientes demasiado tiempo
+        // 4. ACTUALIZAR SALDO DEL CLIENTE
         if (factura.CondicionVenta.Equals("Credito", StringComparison.OrdinalIgnoreCase))
         {
             _cliFactory.ActualizarSaldo(factura.ClienteId, factura.TotalComprobante);
