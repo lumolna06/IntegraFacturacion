@@ -34,10 +34,10 @@ builder.Services.AddScoped(sp => new InventarioFactory(connectionString));
 builder.Services.AddScoped(sp => new VentaFactory(connectionString));
 builder.Services.AddScoped(sp => new CajaFactory(connectionString));
 builder.Services.AddScoped(sp => new ClienteFactory(connectionString));
-
-// AGREGADOS PARA COMPRAS Y PROVEEDORES
 builder.Services.AddScoped(sp => new ProveedorFactory(connectionString));
-//builder.Services.AddScoped(sp => new CompraFactory(connectionString));
+
+// ACTIVADO: Factory para el proceso de compras y CXP
+builder.Services.AddScoped(sp => new CompraFactory(connectionString));
 
 // --- Capa de Lógica (Services) ---
 builder.Services.AddScoped<LicenciaService>();
@@ -49,7 +49,9 @@ builder.Services.AddScoped<IInventarioService, InventarioService>();
 // Servicios de procesos complejos
 builder.Services.AddScoped<VentaService>();
 builder.Services.AddScoped<CajaService>();
-//builder.Services.AddScoped<CompraService>(); // Agregado para procesar entradas de stock
+
+// ACTIVADO: Servicio para procesar compras, inventario y alertas
+builder.Services.AddScoped<CompraService>();
 
 // ==========================================
 // 4. SERVICIOS BASE DE LA API
