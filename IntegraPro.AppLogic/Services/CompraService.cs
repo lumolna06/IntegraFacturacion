@@ -9,7 +9,12 @@ public class CompraService(CompraFactory compraFactory)
 
     public void RegistrarNuevaCompra(CompraDTO compra)
     {
-        if (compra.Detalles.Count == 0) throw new Exception("No hay productos en la compra.");
+        if (compra.Detalles.Count == 0)
+            throw new Exception("No hay productos en la compra.");
+
+        // Solo llamamos a ProcesarCompra. 
+        // El Factory ahora se encarga internamente de las equivalencias 
+        // dentro de la misma transacción SQL.
         _factory.ProcesarCompra(compra);
     }
 
@@ -18,7 +23,6 @@ public class CompraService(CompraFactory compraFactory)
         _factory.AnularCompra(compraId, usuarioId);
     }
 
-    // Nuevo método para conectar el Factory con el Controller
     public List<AlertaPagoDTO> ListarAlertasPagos()
     {
         return _factory.ObtenerAlertasPagos();
