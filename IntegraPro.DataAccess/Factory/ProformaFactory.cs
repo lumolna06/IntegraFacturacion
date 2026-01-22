@@ -13,7 +13,6 @@ public class ProformaFactory(string connectionString) : MasterDao(connectionStri
     {
         decimal totalGeneralCalculado = 0;
 
-        // 1. VALIDACIÓN DE PRECIOS (costo_actual) Y STOCK (existencia)
         foreach (var det in p.Detalles)
         {
             string sqlValidar = "SELECT costo_actual, existencia FROM PRODUCTO WHERE id = @prodid";
@@ -26,17 +25,14 @@ public class ProformaFactory(string connectionString) : MasterDao(connectionStri
             decimal precioVigente = Convert.ToDecimal(row["costo_actual"]);
             decimal existenciaDisponible = Convert.ToDecimal(row["existencia"]);
 
-            // Validar Existencia (permitiendo decimales según tu tabla)
             if (existenciaDisponible < det.Cantidad)
                 throw new Exception($"Existencia insuficiente para el producto {det.ProductoId}. Disponible: {existenciaDisponible}, Solicitado: {det.Cantidad}");
 
-            // Realizar cálculos en el servidor
             det.PrecioUnitario = precioVigente;
             det.TotalLineas = precioVigente * (decimal)det.Cantidad;
             totalGeneralCalculado += det.TotalLineas;
         }
 
-        // 2. INSERTAR ENCABEZADO
         string sqlEnc = @"INSERT INTO PROFORMA_ENCABEZADO (cliente_id, sucursal_id, fecha, fecha_vencimiento, total, estado)
                           VALUES (@cid, @sid, GETDATE(), @fvenc, @total, 'Pendiente');
                           SELECT SCOPE_IDENTITY();";
@@ -51,7 +47,6 @@ public class ProformaFactory(string connectionString) : MasterDao(connectionStri
         object result = ExecuteScalar(sqlEnc, parametrosEnc, false);
         int idGenerado = (result != null && result != DBNull.Value) ? Convert.ToInt32(result) : 0;
 
-        // 3. INSERTAR DETALLES
         foreach (var det in p.Detalles)
         {
             string sqlDet = @"INSERT INTO PROFORMA_DETALLE (proforma_id, producto_id, cantidad, precio_unitario, total_linea)
@@ -158,6 +153,31 @@ public class ProformaFactory(string connectionString) : MasterDao(connectionStri
         return lista;
     }
 
+    public ProformaEncabezadoDTO ObtenerPorId(int id)
+    {
+        string sql = @"SELECT P.*, C.nombre as ClienteNombre 
+                       FROM PROFORMA_ENCABEZADO P
+                       JOIN CLIENTE C ON P.cliente_id = C.id
+                       WHERE P.id = @id";
+
+        var dt = ExecuteQuery(sql, new[] { new SqlParameter("@id", id) }, false);
+
+        if (dt.Rows.Count == 0) return null;
+
+        var proforma = MapearEncabezado(dt.Rows[0]);
+        proforma.Detalles = ObtenerDetallesProforma(id);
+        return proforma;
+    }
+
+    public void AnularProforma(int id)
+    {
+        string sql = "UPDATE PROFORMA_ENCABEZADO SET estado = 'Anulada' WHERE id = @id AND estado = 'Pendiente'";
+        var parametros = new[] { new SqlParameter("@id", id) };
+
+        // Ejecución corregida sin retorno de int
+        ExecuteNonQuery(sql, parametros, false);
+    }
+
     public List<ProformaEncabezadoDTO> ListarPorCliente(int clienteId)
     {
         string sql = @"SELECT P.*, C.nombre as ClienteNombre 
@@ -209,10 +229,10 @@ public class ProformaFactory(string connectionString) : MasterDao(connectionStri
             Id = Convert.ToInt32(r["id"]),
             ClienteId = Convert.ToInt32(r["cliente_id"]),
             ClienteNombre = r["ClienteNombre"].ToString(),
-            SucursalId = Convert.ToInt32(r["sucursal_id"]), // Agregado
+            SucursalId = r.Table.Columns.Contains("sucursal_id") ? Convert.ToInt32(r["sucursal_id"]) : 0,
             Total = Convert.ToDecimal(r["total"]),
             Fecha = Convert.ToDateTime(r["fecha"]),
-            FechaVencimiento = Convert.ToDateTime(r["fecha_vencimiento"]), // Agregado
+            FechaVencimiento = r.Table.Columns.Contains("fecha_vencimiento") ? Convert.ToDateTime(r["fecha_vencimiento"]) : DateTime.MinValue,
             Estado = r["estado"].ToString() ?? "Pendiente",
             Detalles = new List<ProformaDetalleDTO>()
         };
@@ -243,7 +263,6 @@ public class ProformaFactory(string connectionString) : MasterDao(connectionStri
             SELECT @facturaId, producto_id, cantidad, precio_unitario, 0, total_linea
             FROM PROFORMA_DETALLE WHERE proforma_id = @profId;
 
-            -- Rebajo de la columna 'existencia' en PRODUCTO
             UPDATE P 
             SET P.existencia = P.existencia - D.cantidad
             FROM PRODUCTO P
