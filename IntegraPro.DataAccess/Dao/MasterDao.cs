@@ -21,8 +21,7 @@ public abstract class MasterDao
         using var connection = GetConnection();
         using var command = new SqlCommand(query, connection);
 
-        if (isStoredProcedure)
-            command.CommandType = CommandType.StoredProcedure;
+        command.CommandType = isStoredProcedure ? CommandType.StoredProcedure : CommandType.Text;
 
         if (parameters != null)
             command.Parameters.AddRange(parameters);
@@ -32,19 +31,20 @@ public abstract class MasterDao
         return table;
     }
 
-    // 2. Para INSERT que devuelven el ID generado
-    protected int ExecuteScalar(string spName, SqlParameter[]? parameters = null)
+    // 2. MODIFICADO: Ahora soporta Texto plano sin romper llamadas viejas
+    protected object ExecuteScalar(string query, SqlParameter[]? parameters = null, bool isStoredProcedure = true)
     {
         using var connection = GetConnection();
-        using var command = new SqlCommand(spName, connection);
-        command.CommandType = CommandType.StoredProcedure;
+        using var command = new SqlCommand(query, connection);
+
+        command.CommandType = isStoredProcedure ? CommandType.StoredProcedure : CommandType.Text;
 
         if (parameters != null)
             command.Parameters.AddRange(parameters);
 
         connection.Open();
         var result = command.ExecuteScalar();
-        return result != DBNull.Value ? Convert.ToInt32(result) : 0;
+        return result ?? DBNull.Value;
     }
 
     // 3. Para cambios directos (UPDATE, DELETE, INSERT simples)
@@ -53,8 +53,7 @@ public abstract class MasterDao
         using var connection = GetConnection();
         using var command = new SqlCommand(query, connection);
 
-        if (isStoredProcedure)
-            command.CommandType = CommandType.StoredProcedure;
+        command.CommandType = isStoredProcedure ? CommandType.StoredProcedure : CommandType.Text;
 
         if (parameters != null)
             command.Parameters.AddRange(parameters);
@@ -73,16 +72,16 @@ public abstract class MasterDao
     // NUEVOS MÉTODOS PARA TRANSACCIONES (ACID)
     // ==========================================
 
-    // Permite ejecutar un Scalar (como obtener el ID de factura) dentro de una transacción abierta
     protected object ExecuteScalarInTransaction(string sql, SqlParameter[] parameters, SqlConnection connection, SqlTransaction transaction)
     {
         using var command = new SqlCommand(sql, connection, transaction);
+        // Por defecto en transacciones manuales solemos usar Texto, 
+        // pero puedes añadir lógica de CommandType aquí si fuera necesario.
         if (parameters != null) command.Parameters.AddRange(parameters);
         var result = command.ExecuteScalar();
         return result ?? DBNull.Value;
     }
 
-    // Permite ejecutar comandos (como el detalle o el kardex) dentro de una transacción abierta
     protected void ExecuteNonQueryInTransaction(string sql, SqlParameter[] parameters, SqlConnection connection, SqlTransaction transaction)
     {
         using var command = new SqlCommand(sql, connection, transaction);
