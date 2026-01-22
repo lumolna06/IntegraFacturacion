@@ -1,6 +1,7 @@
 ﻿using IntegraPro.DataAccess.Dao;
 using IntegraPro.DTO.Models;
 using Microsoft.Data.SqlClient;
+using System;
 using System.Data;
 
 namespace IntegraPro.DataAccess.Factory;
@@ -9,19 +10,43 @@ public class ConfiguracionFactory : MasterDao
 {
     public ConfiguracionFactory(string connectionString) : base(connectionString) { }
 
+    // ==========================================
+    // MÉTODO AGREGADO: LECTURA DE DATOS DE EMPRESA
+    // ==========================================
+    /// <summary>
+    /// Obtiene los datos comerciales de la empresa para los encabezados de documentos.
+    /// </summary>
+    public EmpresaDTO? ObtenerEmpresa()
+    {
+        string sql = "SELECT TOP 1 id, nombre_comercial, cedula_juridica, correo_notificaciones, tipo_regimen FROM EMPRESA";
+
+        DataTable dt = ExecuteQuery(sql, null, false);
+
+        if (dt.Rows.Count == 0) return null;
+
+        DataRow row = dt.Rows[0];
+        return new EmpresaDTO
+        {
+            Id = Convert.ToInt32(row["id"]),
+            NombreComercial = row["nombre_comercial"]?.ToString() ?? string.Empty,
+            CedulaJuridica = row["cedula_juridica"]?.ToString() ?? string.Empty,
+            CorreoNotificaciones = row["correo_notificaciones"]?.ToString() ?? string.Empty,
+            TipoRegimen = row["tipo_regimen"]?.ToString() ?? "Tradicional"
+        };
+    }
+
     /// <summary>
     /// Registra la licencia inicial en la base de datos tras validar la llave de activación.
     /// </summary>
     public void RegistrarConfiguracionInicial(string nombreEmpresa, string ruc, int maxEquipos, string hid)
     {
-        var parameters = new Microsoft.Data.SqlClient.SqlParameter[] {
-        new Microsoft.Data.SqlClient.SqlParameter("@nombre_empresa", nombreEmpresa),
-        new Microsoft.Data.SqlClient.SqlParameter("@ruc", ruc),
-        new Microsoft.Data.SqlClient.SqlParameter("@max_equipos", maxEquipos),
-        new Microsoft.Data.SqlClient.SqlParameter("@hid_principal", hid)
-    };
+        var parameters = new SqlParameter[] {
+            new SqlParameter("@nombre_empresa", nombreEmpresa),
+            new SqlParameter("@ruc", ruc),
+            new SqlParameter("@max_equipos", maxEquipos),
+            new SqlParameter("@hid_principal", hid)
+        };
 
-        // Llamamos al SP que creamos en SQL Server para que inserte Empresa y Sucursal
         ExecuteNonQuery("sp_Configuracion_ActivarSistema", parameters);
     }
 
@@ -45,7 +70,7 @@ public class ConfiguracionFactory : MasterDao
     {
         var p = new SqlParameter[] {
             new SqlParameter("@nombre_comercial", empresa.NombreComercial),
-            new SqlParameter("@razon_social", empresa.NombreComercial), // Usamos NombreComercial como RazonSocial para evitar error de propiedad
+            new SqlParameter("@razon_social", empresa.NombreComercial),
             new SqlParameter("@cedula_juridica", empresa.CedulaJuridica),
             new SqlParameter("@tipo_regimen", empresa.TipoRegimen),
             new SqlParameter("@telefono", "00000000"),

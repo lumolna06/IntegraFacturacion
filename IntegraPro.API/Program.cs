@@ -13,7 +13,7 @@ string connectionString = builder.Configuration.GetConnectionString("DefaultConn
     ?? "Server=DESKTOP-AR7JSQE\\SQLEXPRESS;Database=ERP_SistemaPro;Integrated Security=SSPI;TrustServerCertificate=True;";
 
 // ==========================================
-// 2. CONFIGURACIÓN DE CORS (Para conexión con el Front-End)
+// 2. CONFIGURACIÓN DE CORS
 // ==========================================
 builder.Services.AddCors(options => {
     options.AddPolicy("AllowAll", policy => {
@@ -29,14 +29,15 @@ builder.Services.AddCors(options => {
 builder.Services.AddScoped(sp => new UsuarioFactory(connectionString));
 builder.Services.AddScoped(sp => new ProductoFactory(connectionString));
 builder.Services.AddScoped(sp => new CategoriaFactory(connectionString));
-builder.Services.AddScoped(sp => new ConfiguracionFactory(connectionString));
+builder.Services.AddScoped(sp => new ConfiguracionFactory(connectionString)); // Centraliza datos de Empresa
 builder.Services.AddScoped(sp => new InventarioFactory(connectionString));
 builder.Services.AddScoped(sp => new VentaFactory(connectionString));
 builder.Services.AddScoped(sp => new CajaFactory(connectionString));
 builder.Services.AddScoped(sp => new ClienteFactory(connectionString));
 builder.Services.AddScoped(sp => new ProveedorFactory(connectionString));
 builder.Services.AddScoped(sp => new CompraFactory(connectionString));
-builder.Services.AddScoped(sp => new AbonoFactory(connectionString)); // <-- AÑADIDO
+builder.Services.AddScoped(sp => new AbonoFactory(connectionString));
+builder.Services.AddScoped(sp => new ProformaFactory(connectionString));
 
 // --- Capa de Lógica (Services) ---
 builder.Services.AddScoped<LicenciaService>();
@@ -49,9 +50,12 @@ builder.Services.AddScoped<IInventarioService, InventarioService>();
 builder.Services.AddScoped<VentaService>();
 builder.Services.AddScoped<CajaService>();
 builder.Services.AddScoped<CompraService>();
-builder.Services.AddScoped<AbonoService>(); // <-- AÑADIDO
+builder.Services.AddScoped<AbonoService>();
 
-// NUEVO: Servicio para lectura de XML de Hacienda Costa Rica
+// ProformaService ahora inyecta ProformaFactory y ConfiguracionFactory automáticamente
+builder.Services.AddScoped<ProformaService>();
+
+// Servicio para lectura de XML de Hacienda Costa Rica
 builder.Services.AddScoped(sp => new XmlParserService(connectionString));
 
 // ==========================================

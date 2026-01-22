@@ -32,7 +32,8 @@ public class ProductoFactory : MasterDao
 
     public int Create(ProductoDTO producto)
     {
-        return ExecuteScalar("sp_Producto_Insert", _mapper.MapToParameters(producto));
+        object result = ExecuteScalar("sp_Producto_Insert", _mapper.MapToParameters(producto).ToArray(), true);
+        return Convert.ToInt32(result);
     }
 
     public void Update(ProductoDTO producto)
