@@ -36,6 +36,7 @@ builder.Services.AddScoped(sp => new CajaFactory(connectionString));
 builder.Services.AddScoped(sp => new ClienteFactory(connectionString));
 builder.Services.AddScoped(sp => new ProveedorFactory(connectionString));
 builder.Services.AddScoped(sp => new CompraFactory(connectionString));
+builder.Services.AddScoped(sp => new AbonoFactory(connectionString)); // <-- AÑADIDO
 
 // --- Capa de Lógica (Services) ---
 builder.Services.AddScoped<LicenciaService>();
@@ -48,6 +49,7 @@ builder.Services.AddScoped<IInventarioService, InventarioService>();
 builder.Services.AddScoped<VentaService>();
 builder.Services.AddScoped<CajaService>();
 builder.Services.AddScoped<CompraService>();
+builder.Services.AddScoped<AbonoService>(); // <-- AÑADIDO
 
 // NUEVO: Servicio para lectura de XML de Hacienda Costa Rica
 builder.Services.AddScoped(sp => new XmlParserService(connectionString));
