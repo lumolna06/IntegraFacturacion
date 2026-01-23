@@ -2,38 +2,37 @@
 
 public class FacturaDTO
 {
-    // --- Encabezado ---
+    public int Id { get; set; }
     public int ClienteId { get; set; }
+    public string? ClienteNombre { get; set; }
+    public string? ClienteIdentificacion { get; set; }
     public int SucursalId { get; set; }
     public int UsuarioId { get; set; }
-
-    // --- PROPIEDADES PARA FACTURACIÓN ELECTRÓNICA / LOCAL ---
-    // El Factory usará estos si vienen del Front, o los generará si son null
     public string? Consecutivo { get; set; }
     public string? ClaveNumerica { get; set; }
-
-    public string CondicionVenta { get; set; } = "Contado"; // Contado o Credito
+    public DateTime Fecha { get; set; }
+    public string CondicionVenta { get; set; } = "Contado";
     public string MedioPago { get; set; } = "Efectivo";
-    public string? Notas { get; set; }
-
-    // Detalle de productos
-    public List<FacturaDetalleDTO> Detalles { get; set; } = new();
-
-    // Totales calculados (Suma de todas las líneas)
     public decimal TotalNeto { get; set; }
     public decimal TotalImpuesto { get; set; }
     public decimal TotalComprobante { get; set; }
+
+    // CAMPOS DE CONTROL PARA EL FLUJO AUTOMÁTICO
+    public string? EstadoHacienda { get; set; } = "LOCAL"; // LOCAL, ACEPTADO, RECHAZADO
+    public bool EsOffline { get; set; } = true;
+
+    public List<FacturaDetalleDTO> Detalles { get; set; } = new();
 }
 
 public class FacturaDetalleDTO
 {
     public int ProductoId { get; set; }
+    public string? ProductoNombre { get; set; }
     public decimal Cantidad { get; set; }
     public decimal PrecioUnitario { get; set; }
-
-    // --- PROPIEDAD CRÍTICA PARA LA SOLUCIÓN ROBUSTA ---
-    // Permite manejar 13%, 1%, 2%, 4% o 0% por cada producto individualmente
     public decimal PorcentajeImpuesto { get; set; }
-
+    public decimal MontoImpuesto { get; set; }
     public decimal PorcentajeDescuento { get; set; }
+    public decimal MontoDescuento { get; set; }
+    public decimal TotalLinea { get; set; }
 }
