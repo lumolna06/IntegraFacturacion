@@ -17,7 +17,7 @@ string connectionString = builder.Configuration.GetConnectionString("DefaultConn
     ?? "Server=DESKTOP-AR7JSQE\\SQLEXPRESS;Database=ERP_SistemaPro;Integrated Security=SSPI;TrustServerCertificate=True;";
 
 // ==========================================
-// 2. CONFIGURACI�N DE CORS (Para conexi�n con el Front-End)
+// 2. CONFIGURACI�N DE CORS
 // ==========================================
 builder.Services.AddCors(options => {
     options.AddPolicy("AllowAll", policy => {
@@ -33,13 +33,15 @@ builder.Services.AddCors(options => {
 builder.Services.AddScoped(sp => new UsuarioFactory(connectionString));
 builder.Services.AddScoped(sp => new ProductoFactory(connectionString));
 builder.Services.AddScoped(sp => new CategoriaFactory(connectionString));
-builder.Services.AddScoped(sp => new ConfiguracionFactory(connectionString));
+builder.Services.AddScoped(sp => new ConfiguracionFactory(connectionString)); // Centraliza datos de Empresa
 builder.Services.AddScoped(sp => new InventarioFactory(connectionString));
 builder.Services.AddScoped(sp => new VentaFactory(connectionString));
 builder.Services.AddScoped(sp => new CajaFactory(connectionString));
 builder.Services.AddScoped(sp => new ClienteFactory(connectionString));
 builder.Services.AddScoped(sp => new ProveedorFactory(connectionString));
 builder.Services.AddScoped(sp => new CompraFactory(connectionString));
+builder.Services.AddScoped(sp => new AbonoFactory(connectionString));
+builder.Services.AddScoped(sp => new ProformaFactory(connectionString));
 
 // --- Capa de L�gica (Services) ---
 builder.Services.AddScoped<LicenciaService>();
@@ -52,8 +54,12 @@ builder.Services.AddScoped<IInventarioService, InventarioService>();
 builder.Services.AddScoped<VentaService>();
 builder.Services.AddScoped<CajaService>();
 builder.Services.AddScoped<CompraService>();
+builder.Services.AddScoped<AbonoService>();
 
-// NUEVO: Servicio para lectura de XML de Hacienda Costa Rica
+// ProformaService ahora inyecta ProformaFactory y ConfiguracionFactory autom�ticamente
+builder.Services.AddScoped<ProformaService>();
+
+// Servicio para lectura de XML de Hacienda Costa Rica
 builder.Services.AddScoped(sp => new XmlParserService(connectionString));
 
 // ==========================================
@@ -109,12 +115,72 @@ namespace IntegraPro.API.Controllers;
 
 [Route("api/[controller]")]
 [ApiController]
-public class AbonosController(IConfiguration config) : ControllerBase
+public class AbonosController(AbonoService abonoService) : ControllerBase
 {
-    private readonly AbonoService _abonoService = new(config.GetConnectionString("DefaultConnection")!);
+    private readonly AbonoService _abonoService = abonoService;
 
-    // --- NUEVO MÉTODO PARA CONSULTAR FACTURAS PENDIENTES ---
-    // Se puede llamar como: api/Abonos/Pendientes o api/Abonos/Pendientes?clienteId=1
+    // 1. RESUMEN GENERAL (Para tarjetas del Dashboard)
+    [HttpGet("resumen-general")]
+    public IActionResult GetResumen()
+    {
+        try
+        {
+            var resumen = _abonoService.ObtenerResumenGeneral();
+            return Ok(new { success = true, data = resumen });
+        }
+        catch (Exception ex)
+        {
+            return BadRequest(new { success = false, message = ex.Message });
+        }
+    }
+
+    // 2. BUSCAR CUENTAS POR COBRAR (Filtro por nombre, factura o cédula)
+    [HttpGet("buscar-cxc")]
+    public IActionResult BuscarCxc([FromQuery] string filtro)
+    {
+        try
+        {
+            var resultados = _abonoService.BuscarCuentasPorCobrar(filtro ?? "");
+            return Ok(new { success = true, data = resultados });
+        }
+        catch (Exception ex)
+        {
+            return BadRequest(new { success = false, message = ex.Message });
+        }
+    }
+
+    // 3. ALERTAS DE MORA (Facturas ya vencidas)
+    [HttpGet("alertas-mora")]
+    public IActionResult GetAlertasMora()
+    {
+        try
+        {
+            var alertas = _abonoService.ListarAlertasMora();
+            return Ok(new { success = true, data = alertas });
+        }
+        catch (Exception ex)
+        {
+            return BadRequest(new { success = false, message = ex.Message });
+        }
+    }
+
+    // 4. HISTORIAL DE ABONOS DE UNA FACTURA ESPECÍFICA
+    [HttpGet("{cuentaId}/historial")] // <-- Swagger mostrará "cuentaId"
+    public IActionResult GetHistorial(int cuentaId)
+    {
+        try
+        {
+            // Pasamos el ID al servicio (no importa que el servicio lo reciba como 'facturaId')
+            var historial = _abonoService.ObtenerHistorialDeAbonos(cuentaId);
+            return Ok(new { success = true, data = historial });
+        }
+        catch (Exception ex)
+        {
+            return BadRequest(new { success = false, message = ex.Message });
+        }
+    }
+
+    // 5. CONSULTAR FACTURAS PENDIENTES (Tu método original actualizado)
     [HttpGet("Pendientes")]
     public IActionResult GetPendientes([FromQuery] int? clienteId)
     {
@@ -129,6 +195,7 @@ public class AbonosController(IConfiguration config) : ControllerBase
         }
     }
 
+    // 6. REGISTRAR ABONO (Tu método original actualizado)
     [HttpPost("RegistrarAbono/{clienteId}")]
     public IActionResult Post([FromBody] AbonoDTO abono, int clienteId)
     {
@@ -437,6 +504,71 @@ public class CompraController(CompraService compraService) : ControllerBase
     }
 }.
  
+--- RUTA: C:\Users\Luis\source\repos\Integra\IntegraPro\IntegraPro.API\Controllers\ConfiguracionController.cs --- 
+--- NOMBRE: ConfiguracionController.cs --- 
+ 
+﻿using IntegraPro.DataAccess.Factory;
+using IntegraPro.DTO.Models;
+using Microsoft.AspNetCore.Mvc;
+using System;
+
+namespace IntegraPro.API.Controllers;
+
+[ApiController]
+[Route("api/[controller]")]
+public class ConfiguracionController(ConfiguracionFactory factory) : ControllerBase
+{
+    // OBTENER TODOS LOS DATOS: GET api/configuracion/empresa
+    [HttpGet("empresa")]
+    public IActionResult GetEmpresa()
+    {
+        try
+        {
+            var datos = factory.ObtenerEmpresa();
+            if (datos == null)
+                return NotFound(new { message = "No se encontraron datos de configuración para la empresa." });
+
+            return Ok(datos);
+        }
+        catch (Exception ex)
+        {
+            return BadRequest(new { success = false, message = "Error al obtener datos: " + ex.Message });
+        }
+    }
+
+    // CREAR O ACTUALIZAR (UPSERT): POST api/configuracion/empresa
+    [HttpPost("empresa")]
+    public IActionResult SaveEmpresa(EmpresaDTO dto)
+    {
+        try
+        {
+            factory.GuardarEmpresa(dto);
+            return Ok(new { success = true, message = "Datos de empresa procesados correctamente." });
+        }
+        catch (Exception ex)
+        {
+            return BadRequest(new { success = false, message = "Error al guardar: " + ex.Message });
+        }
+    }
+
+    // ACTUALIZAR REGISTRO EXISTENTE: PUT api/configuracion/empresa/1
+    [HttpPut("empresa/{id}")]
+    public IActionResult UpdateEmpresa(int id, EmpresaDTO dto)
+    {
+        try
+        {
+            // Forzamos el ID del DTO para que coincida con el de la URL (generalmente 1)
+            dto.Id = id;
+            factory.GuardarEmpresa(dto);
+            return Ok(new { success = true, message = $"Datos de la empresa con ID {id} actualizados correctamente." });
+        }
+        catch (Exception ex)
+        {
+            return BadRequest(new { success = false, message = "Error al actualizar: " + ex.Message });
+        }
+    }
+}.
+ 
 --- RUTA: C:\Users\Luis\source\repos\Integra\IntegraPro\IntegraPro.API\Controllers\InventarioController.cs --- 
 --- NOMBRE: InventarioController.cs --- 
  
@@ -563,6 +695,133 @@ public class ProductoController(IProductoService service) : ControllerBase
 
     [HttpGet("alertas")]
     public IActionResult GetAlertas() => Ok(service.ObtenerAlertasStock());
+}.
+ 
+--- RUTA: C:\Users\Luis\source\repos\Integra\IntegraPro\IntegraPro.API\Controllers\ProformasController.cs --- 
+--- NOMBRE: ProformasController.cs --- 
+ 
+﻿using IntegraPro.AppLogic.Services;
+using IntegraPro.DTO.Models;
+using Microsoft.AspNetCore.Mvc;
+using QuestPDF.Fluent;      // Necesario para .GeneratePdf()
+using QuestPDF.Infrastructure; // Necesario para LicenseType
+using System;
+
+namespace IntegraPro.API.Controllers;
+
+[ApiController]
+[Route("api/[controller]")]
+public class ProformasController(ProformaService service) : ControllerBase
+{
+    // Crear una nueva proforma
+    [HttpPost]
+    public IActionResult Post(ProformaEncabezadoDTO dto)
+    {
+        try
+        {
+            var id = service.GuardarProforma(dto);
+            return Ok(new { id, message = "Proforma registrada exitosamente" });
+        }
+        catch (Exception ex)
+        {
+            return BadRequest(new { success = false, message = ex.Message });
+        }
+    }
+
+    // Listado general con filtro opcional
+    [HttpGet]
+    public IActionResult Get(string filtro = "")
+        => Ok(service.Consultar(filtro));
+
+    // OBTENER UNA SOLA PROFORMA
+    [HttpGet("{id}")]
+    public IActionResult GetById(int id)
+    {
+        var proforma = service.ObtenerPorId(id);
+        if (proforma == null) return NotFound(new { message = "La proforma solicitada no existe" });
+        return Ok(proforma);
+    }
+
+    // --- ENDPOINT PARA IMPRIMIR PDF (CORREGIDO) ---
+    [HttpGet("{id}/imprimir")]
+    public IActionResult GenerarPdf(int id)
+    {
+        try
+        {
+            // 1. Obtener los datos de la proforma
+            var proforma = service.ObtenerPorId(id);
+            if (proforma == null) return NotFound(new { message = "Proforma no encontrada" });
+
+            // 2. Obtener los datos de la empresa (Usa el nuevo método del Service)
+            var datosEmpresa = service.ObtenerEmpresa();
+            if (datosEmpresa == null) return BadRequest(new { message = "Debe configurar los datos de la empresa primero." });
+
+            // Configurar licencia para QuestPDF
+            QuestPDF.Settings.License = LicenseType.Community;
+
+            // 3. Instanciar el reporte pasando AMBOS objetos para cumplir con el constructor
+            var documento = new Reports.ProformaReport(proforma, datosEmpresa);
+            byte[] pdfBytes = documento.GeneratePdf();
+
+            // Retornar el archivo PDF para abrir o descargar
+            return File(pdfBytes, "application/pdf", $"Proforma_{id}.pdf");
+        }
+        catch (Exception ex)
+        {
+            return BadRequest(new { success = false, message = "Error al generar el reporte: " + ex.Message });
+        }
+    }
+
+    // Buscar proformas de un cliente específico
+    [HttpGet("cliente/{clienteId}")]
+    public IActionResult GetByCliente(int clienteId)
+        => Ok(service.ObtenerPorCliente(clienteId));
+
+    // Editar una proforma existente
+    [HttpPut("{id}")]
+    public IActionResult Put(int id, ProformaEncabezadoDTO dto)
+    {
+        try
+        {
+            dto.Id = id;
+            service.EditarProforma(dto);
+            return Ok(new { success = true, message = "Proforma actualizada exitosamente" });
+        }
+        catch (Exception ex)
+        {
+            return BadRequest(new { success = false, message = ex.Message });
+        }
+    }
+
+    // ANULAR PROFORMA
+    [HttpPatch("{id}/anular")]
+    public IActionResult Anular(int id)
+    {
+        try
+        {
+            service.Anular(id);
+            return Ok(new { success = true, message = "Proforma anulada correctamente" });
+        }
+        catch (Exception ex)
+        {
+            return BadRequest(new { success = false, message = ex.Message });
+        }
+    }
+
+    // Convertir proforma a factura
+    [HttpPost("{id}/convertir-a-factura")]
+    public IActionResult Facturar(int id, [FromQuery] int usuarioId, [FromQuery] string medio = "Efectivo")
+    {
+        try
+        {
+            var nDoc = service.Facturar(id, usuarioId, medio);
+            return Ok(new { success = true, numeroFactura = nDoc });
+        }
+        catch (Exception ex)
+        {
+            return BadRequest(new { success = false, message = ex.Message });
+        }
+    }
 }.
  
 --- RUTA: C:\Users\Luis\source\repos\Integra\IntegraPro\IntegraPro.API\Controllers\ProveedorController.cs --- 
@@ -861,7 +1120,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("IntegraPro.API")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+93f2d1c76915b33e444d362ddb68d39ad359438c")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+9e8e694dd6cd375ed2793f3e6727870d2246f0f3")]
 [assembly: System.Reflection.AssemblyProductAttribute("IntegraPro.API")]
 [assembly: System.Reflection.AssemblyTitleAttribute("IntegraPro.API")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
@@ -914,6 +1173,167 @@ using System.Reflection;
 // Generado por la clase WriteCodeFragment de MSBuild.
 
 .
+ 
+--- RUTA: C:\Users\Luis\source\repos\Integra\IntegraPro\IntegraPro.API\Reports\ProformaReport.cs --- 
+--- NOMBRE: ProformaReport.cs --- 
+ 
+﻿using QuestPDF.Fluent;
+using QuestPDF.Helpers;
+using QuestPDF.Infrastructure;
+using IntegraPro.DTO.Models;
+
+namespace IntegraPro.API.Reports;
+
+public class ProformaReport(ProformaEncabezadoDTO model, EmpresaDTO empresa) : IDocument
+{
+    public DocumentMetadata GetMetadata() => DocumentMetadata.Default;
+
+    public void Compose(IDocumentContainer container)
+    {
+        container.Page(page =>
+        {
+            page.Margin(1, Unit.Centimetre);
+            page.DefaultTextStyle(x => x.FontFamily(Fonts.Arial).FontSize(10));
+
+            // ==========================================
+            // ENCABEZADO: DATOS EMPRESA Y DOCUMENTO
+            // ==========================================
+            page.Header().Row(row =>
+            {
+                row.RelativeItem().Column(col =>
+                {
+                    col.Item().Text(empresa.NombreComercial.ToUpper()).FontSize(18).Bold().FontColor(Colors.Blue.Medium);
+                    col.Item().Text($"Cédula Jurídica: {empresa.CedulaJuridica}");
+
+                    if (!string.IsNullOrEmpty(empresa.Telefono))
+                        col.Item().Text($"Teléfono: {empresa.Telefono}");
+
+                    if (!string.IsNullOrEmpty(empresa.CorreoNotificaciones))
+                    {
+                        col.Item().Row(r =>
+                        {
+                            r.AutoItem().Text("Email: ");
+                            r.RelativeItem().Hyperlink($"mailto:{empresa.CorreoNotificaciones}")
+                                .Text(empresa.CorreoNotificaciones.ToLower())
+                                .FontColor(Colors.Blue.Medium)
+                                .Underline();
+                        });
+                    }
+                });
+
+                row.RelativeItem().AlignRight().Column(col =>
+                {
+                    col.Item().Text("PROFORMA").FontSize(22).Light();
+                    col.Item().Text($"# {model.Id:D6}").Bold();
+                    col.Item().Text($"Fecha: {model.Fecha:dd/MM/yyyy}");
+                    col.Item().Text($"Vence: {model.FechaVencimiento:dd/MM/yyyy}").FontSize(9).Italic();
+                });
+            });
+
+            // ==========================================
+            // CONTENIDO: CLIENTE Y TABLA DE PRODUCTOS
+            // ==========================================
+            page.Content().PaddingVertical(1, Unit.Centimetre).Column(col =>
+            {
+                // SECCIÓN CLIENTE
+                col.Item().PaddingBottom(10).BorderBottom(1).BorderColor(Colors.Grey.Lighten2).PaddingBottom(5).Row(row =>
+                {
+                    row.RelativeItem().Column(c => {
+                        c.Item().Text(t => {
+                            t.Span("CLIENTE: ").Bold();
+                            t.Span(model.ClienteNombre?.ToUpper() ?? "N/A");
+                        });
+
+                        if (!string.IsNullOrEmpty(model.ClienteIdentificacion))
+                        {
+                            c.Item().Text(t => {
+                                t.Span("CÉDULA: ").Bold().FontSize(9);
+                                t.Span(model.ClienteIdentificacion).FontSize(9);
+                            });
+                        }
+                    });
+
+                    row.RelativeItem().AlignRight().Text(t => {
+                        t.Span("ESTADO: ").Bold();
+                        t.Span(model.Estado.ToUpper()).FontColor(model.Estado == "Pendiente" ? Colors.Orange.Medium : Colors.Green.Medium);
+                    });
+                });
+
+                // TABLA DE PRODUCTOS (CON DESGLOSE DE IVA)
+                col.Item().PaddingTop(10).Table(table =>
+                {
+                    table.ColumnsDefinition(columns => {
+                        columns.RelativeColumn(1f);    // Código
+                        columns.RelativeColumn(2.5f);  // Producto
+                        columns.RelativeColumn(0.6f);  // Cant.
+                        columns.RelativeColumn(1.1f);  // P. Neto
+                        columns.RelativeColumn(0.5f);  // %
+                        columns.RelativeColumn(1f);    // IVA
+                        columns.RelativeColumn(1.2f);  // Total
+                    });
+
+                    table.Header(header => {
+                        header.Cell().BorderBottom(1).PaddingBottom(5).Text("Código").Bold();
+                        header.Cell().BorderBottom(1).PaddingBottom(5).Text("Producto").Bold();
+                        header.Cell().BorderBottom(1).PaddingBottom(5).AlignRight().Text("Cant.").Bold();
+                        header.Cell().BorderBottom(1).PaddingBottom(5).AlignRight().Text("P. Neto").Bold();
+                        header.Cell().BorderBottom(1).PaddingBottom(5).AlignRight().Text("%").Bold();
+                        header.Cell().BorderBottom(1).PaddingBottom(5).AlignRight().Text("IVA").Bold();
+                        header.Cell().BorderBottom(1).PaddingBottom(5).AlignRight().Text("Total").Bold();
+                    });
+
+                    foreach (var item in model.Detalles)
+                    {
+                        table.Cell().PaddingVertical(2).BorderBottom(1).BorderColor(Colors.Grey.Lighten4).Text(item.ProductoCodigo).FontSize(8);
+                        table.Cell().PaddingVertical(2).BorderBottom(1).BorderColor(Colors.Grey.Lighten4).Text(item.ProductoNombre).FontSize(9);
+                        table.Cell().PaddingVertical(2).BorderBottom(1).BorderColor(Colors.Grey.Lighten4).AlignRight().Text(item.Cantidad.ToString("N2"));
+                        table.Cell().PaddingVertical(2).BorderBottom(1).BorderColor(Colors.Grey.Lighten4).AlignRight().Text(item.PrecioUnitario.ToString("N2"));
+                        table.Cell().PaddingVertical(2).BorderBottom(1).BorderColor(Colors.Grey.Lighten4).AlignRight().Text($"{item.PorcentajeImpuesto:N0}%").FontSize(8);
+                        table.Cell().PaddingVertical(2).BorderBottom(1).BorderColor(Colors.Grey.Lighten4).AlignRight().Text(item.ImpuestoTotal.ToString("N2"));
+                        table.Cell().PaddingVertical(2).BorderBottom(1).BorderColor(Colors.Grey.Lighten4).AlignRight().Text(item.TotalLineas.ToString("N2")).Bold();
+                    }
+                });
+
+                // ==========================================
+                // SECCIÓN DE TOTALES FINALES
+                // ==========================================
+                col.Item().AlignRight().PaddingTop(10).MinWidth(180).Column(c =>
+                {
+                    c.Item().Row(r => {
+                        r.RelativeItem().Text("Subtotal Neto:").AlignRight();
+                        r.ConstantItem(85).AlignRight().Text($"{model.TotalNeto:N2}");
+                    });
+
+                    c.Item().Row(r => {
+                        r.RelativeItem().Text("Total Impuestos:").AlignRight();
+                        r.ConstantItem(85).AlignRight().Text($"{model.TotalImpuesto:N2}");
+                    });
+
+                    c.Item().PaddingTop(5).BorderTop(1).Row(r => {
+                        r.RelativeItem().Text("TOTAL COMPROBANTE:").FontSize(12).Bold().FontColor(Colors.Blue.Medium).AlignRight();
+                        r.ConstantItem(85).AlignRight().Text($"{model.Total:N2}").FontSize(12).Bold().FontColor(Colors.Blue.Medium);
+                    });
+                });
+            });
+
+            // PIE DE PÁGINA
+            page.Footer().AlignCenter().Column(c => {
+                c.Item().Text(x =>
+                {
+                    x.Span("Gracias por su preferencia. ").FontSize(9);
+                    x.Span($"Esta proforma es válida hasta el {model.FechaVencimiento:dd/MM/yyyy}.").FontSize(9).Italic();
+                });
+
+                c.Item().PaddingTop(5).Text(x => {
+                    x.Span("Página ").FontSize(8);
+                    x.CurrentPageNumber().FontSize(8);
+                    x.Span(" de ").FontSize(8);
+                    x.TotalPages().FontSize(8);
+                });
+            });
+        });
+    }
+}.
  
 --- RUTA: C:\Users\Luis\source\repos\Integra\IntegraPro\IntegraPro.AppLogic\Class1.cs --- 
 --- NOMBRE: Class1.cs --- 
@@ -1019,7 +1439,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("IntegraPro.AppLogic")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+93f2d1c76915b33e444d362ddb68d39ad359438c")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+9e8e694dd6cd375ed2793f3e6727870d2246f0f3")]
 [assembly: System.Reflection.AssemblyProductAttribute("IntegraPro.AppLogic")]
 [assembly: System.Reflection.AssemblyTitleAttribute("IntegraPro.AppLogic")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
@@ -1049,25 +1469,46 @@ using IntegraPro.DTO.Models;
 
 namespace IntegraPro.AppLogic.Services;
 
-public class AbonoService(string connectionString)
+// Cambiamos a constructor primario para inyección de dependencias
+public class AbonoService(AbonoFactory abonoFactory)
 {
-    private readonly AbonoFactory _abonoFactory = new(connectionString);
+    private readonly AbonoFactory _factory = abonoFactory;
 
     public void RegistrarAbono(AbonoDTO abono, int clienteId)
     {
         if (abono.MontoAbonado <= 0)
             throw new Exception("El monto del abono debe ser mayor a cero.");
 
-        // Opcional: Podrías validar aquí que el monto no exceda el saldo de la cuenta
-        // antes de llamar al factory.
-
-        _abonoFactory.ProcesarAbonoCompleto(abono, clienteId);
+        _factory.ProcesarAbonoCompleto(abono, clienteId);
     }
 
-    // --- NUEVO MÉTODO PARA CONSULTAR PENDIENTES ---
     public List<object> ObtenerPendientes(int? clienteId)
     {
-        return _abonoFactory.ObtenerFacturasPendientes(clienteId);
+        return _factory.ObtenerFacturasPendientes(clienteId);
+    }
+
+    // --- NUEVOS MÉTODOS ---
+
+    public List<CxcConsultaDTO> BuscarCuentasPorCobrar(string filtro)
+    {
+        // Filtro puede ser nombre, cédula, correo o teléfono
+        return _factory.BuscarCxcClientes(filtro?.Trim() ?? "");
+    }
+
+    public List<AbonoHistorialDTO> ObtenerHistorialDeAbonos(int facturaId)
+    {
+        if (facturaId <= 0) throw new Exception("ID de factura no válido.");
+        return _factory.ListarHistorialAbonos(facturaId);
+    }
+
+    public List<AlertaCxcDTO> ListarAlertasMora()
+    {
+        return _factory.ObtenerAlertasVencimiento();
+    }
+
+    public ResumenCxcDTO ObtenerResumenGeneral()
+    {
+        return _factory.ObtenerTotalesCxc();
     }
 }.
  
@@ -1508,6 +1949,41 @@ public class ProductoService(ProductoFactory factory) : IProductoService
 
     public ApiResponse<List<ProductoDTO>> ObtenerAlertasStock() =>
         new(true, "Alertas de stock", factory.GetStockAlerts());
+}.
+ 
+--- RUTA: C:\Users\Luis\source\repos\Integra\IntegraPro\IntegraPro.AppLogic\Services\ProformaService.cs --- 
+--- NOMBRE: ProformaService.cs --- 
+ 
+﻿using IntegraPro.DataAccess.Factory;
+using IntegraPro.DTO.Models;
+using System.Collections.Generic;
+
+namespace IntegraPro.AppLogic.Services;
+
+// El constructor ahora recibe ConfiguracionFactory para obtener los datos de la empresa
+public class ProformaService(ProformaFactory factory, ConfiguracionFactory configFactory)
+{
+    // Métodos de Proforma
+    public int GuardarProforma(ProformaEncabezadoDTO p) => factory.CrearProforma(p);
+
+    public List<ProformaEncabezadoDTO> Consultar(string filtro) => factory.ListarProformas(filtro);
+
+    public ProformaEncabezadoDTO ObtenerPorId(int id) => factory.ObtenerPorId(id);
+
+    public List<ProformaEncabezadoDTO> ObtenerPorCliente(int clienteId) => factory.ListarPorCliente(clienteId);
+
+    public void EditarProforma(ProformaEncabezadoDTO p) => factory.ActualizarProforma(p);
+
+    public void Anular(int id) => factory.AnularProforma(id);
+
+    public string Facturar(int id, int usuarioId, string medio) => factory.ConvertirAFactura(id, usuarioId, medio);
+
+    // --- MÉTODO ACTUALIZADO PARA USAR CONFIGURACIONFACTORY ---
+    public EmpresaDTO? ObtenerEmpresa()
+    {
+        // Llamamos al método que acabamos de crear en ConfiguracionFactory
+        return configFactory.ObtenerEmpresa();
+    }
 }.
  
 --- RUTA: C:\Users\Luis\source\repos\Integra\IntegraPro\IntegraPro.AppLogic\Services\UsuarioService.cs --- 
@@ -1973,8 +2449,7 @@ public abstract class MasterDao
         using var connection = GetConnection();
         using var command = new SqlCommand(query, connection);
 
-        if (isStoredProcedure)
-            command.CommandType = CommandType.StoredProcedure;
+        command.CommandType = isStoredProcedure ? CommandType.StoredProcedure : CommandType.Text;
 
         if (parameters != null)
             command.Parameters.AddRange(parameters);
@@ -1984,19 +2459,20 @@ public abstract class MasterDao
         return table;
     }
 
-    // 2. Para INSERT que devuelven el ID generado
-    protected int ExecuteScalar(string spName, SqlParameter[]? parameters = null)
+    // 2. MODIFICADO: Ahora soporta Texto plano sin romper llamadas viejas
+    protected object ExecuteScalar(string query, SqlParameter[]? parameters = null, bool isStoredProcedure = true)
     {
         using var connection = GetConnection();
-        using var command = new SqlCommand(spName, connection);
-        command.CommandType = CommandType.StoredProcedure;
+        using var command = new SqlCommand(query, connection);
+
+        command.CommandType = isStoredProcedure ? CommandType.StoredProcedure : CommandType.Text;
 
         if (parameters != null)
             command.Parameters.AddRange(parameters);
 
         connection.Open();
         var result = command.ExecuteScalar();
-        return result != DBNull.Value ? Convert.ToInt32(result) : 0;
+        return result ?? DBNull.Value;
     }
 
     // 3. Para cambios directos (UPDATE, DELETE, INSERT simples)
@@ -2005,8 +2481,7 @@ public abstract class MasterDao
         using var connection = GetConnection();
         using var command = new SqlCommand(query, connection);
 
-        if (isStoredProcedure)
-            command.CommandType = CommandType.StoredProcedure;
+        command.CommandType = isStoredProcedure ? CommandType.StoredProcedure : CommandType.Text;
 
         if (parameters != null)
             command.Parameters.AddRange(parameters);
@@ -2025,16 +2500,16 @@ public abstract class MasterDao
     // NUEVOS MÉTODOS PARA TRANSACCIONES (ACID)
     // ==========================================
 
-    // Permite ejecutar un Scalar (como obtener el ID de factura) dentro de una transacción abierta
     protected object ExecuteScalarInTransaction(string sql, SqlParameter[] parameters, SqlConnection connection, SqlTransaction transaction)
     {
         using var command = new SqlCommand(sql, connection, transaction);
+        // Por defecto en transacciones manuales solemos usar Texto, 
+        // pero puedes añadir lógica de CommandType aquí si fuera necesario.
         if (parameters != null) command.Parameters.AddRange(parameters);
         var result = command.ExecuteScalar();
         return result ?? DBNull.Value;
     }
 
-    // Permite ejecutar comandos (como el detalle o el kardex) dentro de una transacción abierta
     protected void ExecuteNonQueryInTransaction(string sql, SqlParameter[] parameters, SqlConnection connection, SqlTransaction transaction)
     {
         using var command = new SqlCommand(sql, connection, transaction);
@@ -2055,9 +2530,9 @@ namespace IntegraPro.DataAccess.Factory;
 
 public class AbonoFactory(string connectionString) : MasterDao(connectionString)
 {
+    // 1. REGISTRAR ABONO (Mantiene tu lógica transaccional)
     public void ProcesarAbonoCompleto(AbonoDTO abono, int clienteId)
     {
-        // Usamos una transacción para que si algo falla, no se descuente a medias
         string sql = @"
             BEGIN TRANSACTION;
             BEGIN TRY
@@ -2096,19 +2571,136 @@ public class AbonoFactory(string connectionString) : MasterDao(connectionString)
         ExecuteNonQuery(sql, p, false);
     }
 
-    // --- NUEVO MÉTODO PARA CONSULTAR DEUDAS PENDIENTES ---
+    // 2. BUSCAR CUENTAS POR COBRAR (Soporta: Cédula, Nombre, Correo, Teléfono, Factura)
+    public List<CxcConsultaDTO> BuscarCxcClientes(string filtro)
+    {
+        // Usamos las columnas exactas de tu tabla CLIENTE (identificacion)
+        string sql = @"SELECT * FROM VW_EstadoCuenta_Clientes 
+                       WHERE cliente_nombre LIKE @f 
+                          OR factura_numero LIKE @f 
+                          OR cedula LIKE @f 
+                          OR correo LIKE @f 
+                          OR telefono LIKE @f
+                       ORDER BY fecha_vencimiento ASC";
+
+        var p = new[] { new SqlParameter("@f", $"%{filtro}%") };
+        var dt = ExecuteQuery(sql, p, false);
+
+        var lista = new List<CxcConsultaDTO>();
+        foreach (DataRow row in dt.Rows)
+        {
+            lista.Add(new CxcConsultaDTO
+            {
+                FacturaId = Convert.ToInt32(row["cuenta_id"]),
+                NumeroFactura = row["factura_numero"].ToString()!,
+                ClienteNombre = row["cliente_nombre"].ToString()!,
+                ClienteCedula = row["cedula"]?.ToString() ?? "N/A",
+                FechaEmision = Convert.ToDateTime(row["fecha_emision"]),
+                FechaVencimiento = Convert.ToDateTime(row["fecha_vencimiento"]),
+                MontoTotal = Convert.ToDecimal(row["monto_total"]),
+                SaldoPendiente = Convert.ToDecimal(row["saldo_pendiente"]),
+                Estado = "Pendiente",
+                DiasCredito = Convert.ToInt32(row["dias_para_vencimiento"])
+            });
+        }
+        return lista;
+    }
+
+    // 3. HISTORIAL DE ABONOS (Muestra quién recibió el dinero)
+    public List<AbonoHistorialDTO> ListarHistorialAbonos(int facturaId)
+    {
+        string sql = @"SELECT A.id, A.monto_abonado, A.fecha, A.medio_pago, A.referencia, U.nombre_completo
+                       FROM ABONO_CLIENTE A
+                       INNER JOIN USUARIO U ON A.usuario_id = U.id
+                       WHERE A.cuenta_cobrar_id = @fId
+                       ORDER BY A.fecha DESC";
+
+        var p = new[] { new SqlParameter("@fId", facturaId) };
+        var dt = ExecuteQuery(sql, p, false);
+
+        var lista = new List<AbonoHistorialDTO>();
+        foreach (DataRow row in dt.Rows)
+        {
+            lista.Add(new AbonoHistorialDTO
+            {
+                Id = Convert.ToInt32(row["id"]),
+                Monto = Convert.ToDecimal(row["monto_abonado"]),
+                FechaAbono = Convert.ToDateTime(row["fecha"]),
+                MetodoPago = row["medio_pago"].ToString()!,
+                NumeroReferencia = row["referencia"]?.ToString() ?? "Sin Ref.",
+                NombreUsuario = row["nombre_completo"].ToString()!
+            });
+        }
+        return lista;
+    }
+
+    // 4. ALERTAS DE MORA (Facturas vencidas con saldo)
+    public List<AlertaCxcDTO> ObtenerAlertasVencimiento()
+    {
+        string sql = @"SELECT cuenta_id, cliente_nombre, factura_numero, saldo_pendiente, fecha_vencimiento,
+                       dias_para_vencimiento
+                       FROM VW_EstadoCuenta_Clientes
+                       WHERE saldo_pendiente > 0 AND fecha_vencimiento < GETDATE()";
+
+        var dt = ExecuteQuery(sql, null, false);
+        var alertas = new List<AlertaCxcDTO>();
+
+        foreach (DataRow row in dt.Rows)
+        {
+            int dias = Convert.ToInt32(row["dias_para_vencimiento"]);
+            alertas.Add(new AlertaCxcDTO
+            {
+                FacturaId = Convert.ToInt32(row["cuenta_id"]),
+                ClienteNombre = row["cliente_nombre"].ToString()!,
+                NumeroFactura = row["factura_numero"].ToString()!,
+                SaldoPendiente = Convert.ToDecimal(row["saldo_pendiente"]),
+                FechaVencimiento = Convert.ToDateTime(row["fecha_vencimiento"]),
+                DiasVencidos = Math.Abs(dias),
+                NivelRiesgo = Math.Abs(dias) > 30 ? "Crítico" : "Mora"
+            });
+        }
+        return alertas;
+    }
+
+    // 5. RESUMEN GENERAL CXC (Totales para el Dashboard)
+    public ResumenCxcDTO ObtenerTotalesCxc()
+    {
+        string sql = @"SELECT 
+                        SUM(saldo_pendiente) as TotalCobrar,
+                        SUM(CASE WHEN fecha_vencimiento < GETDATE() THEN saldo_pendiente ELSE 0 END) as TotalVencido,
+                        COUNT(cuenta_id) as CantidadFacturas,
+                        COUNT(DISTINCT cliente_id) as TotalClientes
+                       FROM VW_EstadoCuenta_Clientes 
+                       WHERE saldo_pendiente > 0";
+
+        var dt = ExecuteQuery(sql, null, false);
+        if (dt.Rows.Count > 0)
+        {
+            var row = dt.Rows[0];
+            return new ResumenCxcDTO
+            {
+                TotalPorCobrar = row["TotalCobrar"] != DBNull.Value ? Convert.ToDecimal(row["TotalCobrar"]) : 0,
+                TotalVencido = row["TotalVencido"] != DBNull.Value ? Convert.ToDecimal(row["TotalVencido"]) : 0,
+                CantidadFacturasPendientes = row["CantidadFacturas"] != DBNull.Value ? Convert.ToInt32(row["CantidadFacturas"]) : 0,
+                ClientesMorosos = row["TotalClientes"] != DBNull.Value ? Convert.ToInt32(row["TotalClientes"]) : 0
+            };
+        }
+        return new ResumenCxcDTO();
+    }
+
+    // 6. LISTADO SIMPLE DE PENDIENTES
     public List<object> ObtenerFacturasPendientes(int? clienteId = null)
     {
-        string sql = "SELECT * FROM VW_EstadoCuenta_Clientes";
+        string sql = "SELECT * FROM VW_EstadoCuenta_Clientes WHERE saldo_pendiente > 0";
         List<SqlParameter> parametros = new List<SqlParameter>();
 
         if (clienteId.HasValue)
         {
-            sql += " WHERE cliente_id = @cid";
+            sql += " AND cliente_id = @cid";
             parametros.Add(new SqlParameter("@cid", clienteId.Value));
         }
 
-        var dt = ExecuteQuery(sql, parametros.Count > 0 ? parametros.ToArray() : null, false);
+        var dt = ExecuteQuery(sql, (parametros.Count > 0 ? parametros.ToArray() : null), false);
 
         var lista = new List<object>();
         foreach (DataRow row in dt.Rows)
@@ -2704,6 +3296,7 @@ public class CompraFactory(string connectionString)
 ﻿using IntegraPro.DataAccess.Dao;
 using IntegraPro.DTO.Models;
 using Microsoft.Data.SqlClient;
+using System;
 using System.Data;
 
 namespace IntegraPro.DataAccess.Factory;
@@ -2713,54 +3306,104 @@ public class ConfiguracionFactory : MasterDao
     public ConfiguracionFactory(string connectionString) : base(connectionString) { }
 
     /// <summary>
-    /// Registra la licencia inicial en la base de datos tras validar la llave de activación.
+    /// Obtiene todos los datos comerciales de la empresa de la tabla EMPRESA.
+    /// </summary>
+    public EmpresaDTO? ObtenerEmpresa()
+    {
+        string sql = @"SELECT TOP 1 
+                        id, 
+                        nombre_comercial, 
+                        razon_social, 
+                        cedula_juridica, 
+                        tipo_regimen, 
+                        telefono, 
+                        correo_notificaciones, 
+                        sitio_web, 
+                        logo 
+                       FROM EMPRESA";
+
+        DataTable dt = ExecuteQuery(sql, null, false);
+
+        if (dt.Rows.Count == 0) return null;
+
+        DataRow row = dt.Rows[0];
+        return new EmpresaDTO
+        {
+            Id = Convert.ToInt32(row["id"]),
+            NombreComercial = row["nombre_comercial"]?.ToString() ?? string.Empty,
+            RazonSocial = row["razon_social"]?.ToString() ?? string.Empty,
+            CedulaJuridica = row["cedula_juridica"]?.ToString() ?? string.Empty,
+            TipoRegimen = row["tipo_regimen"]?.ToString() ?? "Tradicional",
+            Telefono = row["telefono"]?.ToString() ?? string.Empty,
+            CorreoNotificaciones = row["correo_notificaciones"]?.ToString() ?? string.Empty,
+            SitioWeb = row["sitio_web"]?.ToString() ?? string.Empty,
+            Logo = row["logo"]?.ToString()
+        };
+    }
+
+    /// <summary>
+    /// Guarda o actualiza los datos comerciales de la empresa con validación anti-basura.
+    /// </summary>
+    public void GuardarEmpresa(EmpresaDTO empresa)
+    {
+        // Lógica de protección: Solo actualiza si el valor no es nulo, no está vacío y no es "string"
+        string sql = @"
+            UPDATE EMPRESA SET 
+                nombre_comercial = CASE WHEN ISNULL(@nom, '') NOT IN ('', 'string') THEN @nom ELSE nombre_comercial END,
+                razon_social = CASE WHEN ISNULL(@raz, '') NOT IN ('', 'string') THEN @raz ELSE razon_social END,
+                cedula_juridica = CASE WHEN ISNULL(@ced, '') NOT IN ('', 'string') THEN @ced ELSE cedula_juridica END,
+                tipo_regimen = CASE WHEN ISNULL(@reg, '') NOT IN ('', 'string') THEN @reg ELSE tipo_regimen END,
+                telefono = CASE WHEN ISNULL(@tel, '') NOT IN ('', 'string') THEN @tel ELSE telefono END,
+                correo_notificaciones = CASE WHEN ISNULL(@cor, '') NOT IN ('', 'string') THEN @cor ELSE correo_notificaciones END,
+                sitio_web = CASE WHEN ISNULL(@sit, '') NOT IN ('', 'string') THEN @sit ELSE sitio_web END
+            WHERE id = 1;
+            
+            -- Si no existe el registro 1, lo insertamos (Upsert manual de seguridad)
+            IF @@ROWCOUNT = 0
+            BEGIN
+                INSERT INTO EMPRESA (nombre_comercial, razon_social, cedula_juridica, tipo_regimen, telefono, correo_notificaciones, sitio_web)
+                VALUES (@nom, @raz, @ced, @reg, @tel, @cor, @sit)
+            END";
+
+        var p = new SqlParameter[] {
+            new SqlParameter("@nom", (object)empresa.NombreComercial ?? DBNull.Value),
+            new SqlParameter("@raz", (object)empresa.RazonSocial ?? DBNull.Value),
+            new SqlParameter("@ced", (object)empresa.CedulaJuridica ?? DBNull.Value),
+            new SqlParameter("@reg", (object)empresa.TipoRegimen ?? DBNull.Value),
+            new SqlParameter("@tel", (object)empresa.Telefono ?? DBNull.Value),
+            new SqlParameter("@cor", (object)empresa.CorreoNotificaciones ?? DBNull.Value),
+            new SqlParameter("@sit", (object)empresa.SitioWeb ?? DBNull.Value)
+        };
+
+        ExecuteNonQuery(sql, p, false);
+    }
+
+    /// <summary>
+    /// Registra la licencia inicial en la base de datos.
     /// </summary>
     public void RegistrarConfiguracionInicial(string nombreEmpresa, string ruc, int maxEquipos, string hid)
     {
-        var parameters = new Microsoft.Data.SqlClient.SqlParameter[] {
-        new Microsoft.Data.SqlClient.SqlParameter("@nombre_empresa", nombreEmpresa),
-        new Microsoft.Data.SqlClient.SqlParameter("@ruc", ruc),
-        new Microsoft.Data.SqlClient.SqlParameter("@max_equipos", maxEquipos),
-        new Microsoft.Data.SqlClient.SqlParameter("@hid_principal", hid)
-    };
+        var parameters = new SqlParameter[] {
+            new SqlParameter("@nombre_empresa", nombreEmpresa),
+            new SqlParameter("@ruc", ruc),
+            new SqlParameter("@max_equipos", maxEquipos),
+            new SqlParameter("@hid_principal", hid)
+        };
 
-        // Llamamos al SP que creamos en SQL Server para que inserte Empresa y Sucursal
         ExecuteNonQuery("sp_Configuracion_ActivarSistema", parameters);
     }
 
     /// <summary>
-    /// Llama al SP multinivel para validar si el equipo actual tiene acceso o si se debe auto-registrar.
+    /// Valida el hardware ID contra la licencia.
     /// </summary>
     public DataTable ValidarLicenciaMultiEquipo(string hardwareId)
     {
-        var parameters = new SqlParameter[]
-        {
-            new SqlParameter("@hardware_id", hardwareId)
-        };
-
+        var parameters = new SqlParameter[] { new SqlParameter("@hardware_id", hardwareId) };
         return ExecuteQuery("sp_Licencia_AutoValidar_MultiEquipo", parameters);
     }
 
     /// <summary>
-    /// Guarda los datos comerciales de la empresa.
-    /// </summary>
-    public void GuardarEmpresa(EmpresaDTO empresa)
-    {
-        var p = new SqlParameter[] {
-            new SqlParameter("@nombre_comercial", empresa.NombreComercial),
-            new SqlParameter("@razon_social", empresa.NombreComercial), // Usamos NombreComercial como RazonSocial para evitar error de propiedad
-            new SqlParameter("@cedula_juridica", empresa.CedulaJuridica),
-            new SqlParameter("@tipo_regimen", empresa.TipoRegimen),
-            new SqlParameter("@telefono", "00000000"),
-            new SqlParameter("@correo_notificaciones", empresa.CorreoNotificaciones),
-            new SqlParameter("@sitio_web", "")
-        };
-
-        ExecuteNonQuery("sp_Empresa_Upsert", p);
-    }
-
-    /// <summary>
-    /// Método de legado para obtener licencia simple.
+    /// Obtiene información de licencia.
     /// </summary>
     public LicenciaDTO? ObtenerLicencia(string hardwareId)
     {
@@ -2776,6 +3419,82 @@ public class ConfiguracionFactory : MasterDao
             Estado = row["estado"].ToString()!,
             FechaVencimiento = Convert.ToDateTime(row["fecha_vencimiento"])
         };
+    }
+}.
+ 
+--- RUTA: C:\Users\Luis\source\repos\Integra\IntegraPro\IntegraPro.DataAccess\Factory\EmpresaFactory.cs --- 
+--- NOMBRE: EmpresaFactory.cs --- 
+ 
+﻿using IntegraPro.DataAccess.Dao;
+using IntegraPro.DTO.Models;
+using Microsoft.Data.SqlClient;
+using System;
+using System.Data;
+
+namespace IntegraPro.DataAccess.Factory;
+
+public class EmpresaFactory(string connectionString) : MasterDao(connectionString)
+{
+    public EmpresaDTO ObtenerConfiguracion()
+    {
+        string sql = @"SELECT TOP 1 id, nombre_comercial, cedula_juridica, 
+                              correo_notificaciones, tipo_regimen 
+                       FROM EMPRESA";
+
+        var dt = ExecuteQuery(sql, null, false);
+
+        if (dt.Rows.Count == 0) return null;
+
+        DataRow r = dt.Rows[0];
+        return new EmpresaDTO
+        {
+            Id = Convert.ToInt32(r["id"]),
+            NombreComercial = r["nombre_comercial"].ToString() ?? "",
+            CedulaJuridica = r["cedula_juridica"].ToString() ?? "",
+            CorreoNotificaciones = r["correo_notificaciones"].ToString() ?? "",
+            TipoRegimen = r["tipo_regimen"]?.ToString() ?? "Tradicional"
+        };
+    }
+
+    public int RegistrarEmpresa(EmpresaDTO e)
+    {
+        string sqlCheck = "SELECT COUNT(*) FROM EMPRESA";
+        var count = (int)ExecuteScalar(sqlCheck, null, false);
+
+        if (count > 0)
+            throw new Exception("Ya existe una empresa registrada.");
+
+        string sql = @"INSERT INTO EMPRESA (nombre_comercial, cedula_juridica, correo_notificaciones, tipo_regimen)
+                        VALUES (@nom, @ced, @cor, @reg);
+                        SELECT SCOPE_IDENTITY();";
+
+        var p = new[] {
+            new SqlParameter("@nom", e.NombreComercial),
+            new SqlParameter("@ced", e.CedulaJuridica),
+            new SqlParameter("@cor", e.CorreoNotificaciones),
+            new SqlParameter("@reg", e.TipoRegimen)
+        };
+
+        object result = ExecuteScalar(sql, p, false);
+        return Convert.ToInt32(result);
+    }
+
+    public void ActualizarEmpresa(EmpresaDTO e)
+    {
+        string sql = @"UPDATE EMPRESA SET 
+                        nombre_comercial = @nom, cedula_juridica = @ced,
+                        correo_notificaciones = @cor, tipo_regimen = @reg
+                       WHERE id = @id";
+
+        var p = new[] {
+            new SqlParameter("@id", e.Id),
+            new SqlParameter("@nom", e.NombreComercial),
+            new SqlParameter("@ced", e.CedulaJuridica),
+            new SqlParameter("@cor", e.CorreoNotificaciones),
+            new SqlParameter("@reg", e.TipoRegimen)
+        };
+
+        ExecuteNonQuery(sql, p, false);
     }
 }.
  
@@ -2929,7 +3648,8 @@ public class ProductoFactory : MasterDao
 
     public int Create(ProductoDTO producto)
     {
-        return ExecuteScalar("sp_Producto_Insert", _mapper.MapToParameters(producto));
+        object result = ExecuteScalar("sp_Producto_Insert", _mapper.MapToParameters(producto).ToArray(), true);
+        return Convert.ToInt32(result);
     }
 
     public void Update(ProductoDTO producto)
@@ -2990,6 +3710,331 @@ public class ProductoFactory : MasterDao
             });
         }
         return lista;
+    }
+}.
+ 
+--- RUTA: C:\Users\Luis\source\repos\Integra\IntegraPro\IntegraPro.DataAccess\Factory\ProformaFactory.cs --- 
+--- NOMBRE: ProformaFactory.cs --- 
+ 
+﻿using IntegraPro.DataAccess.Dao;
+using IntegraPro.DTO.Models;
+using Microsoft.Data.SqlClient;
+using System;
+using System.Collections.Generic;
+using System.Data;
+
+namespace IntegraPro.DataAccess.Factory;
+
+public class ProformaFactory(string connectionString) : MasterDao(connectionString)
+{
+    private readonly string _connectionString = connectionString;
+
+    public int CrearProforma(ProformaEncabezadoDTO p)
+    {
+        var configFact = new ConfiguracionFactory(_connectionString);
+        var empresa = configFact.ObtenerEmpresa();
+        bool esTradicional = empresa == null || empresa.TipoRegimen.Equals("Tradicional", StringComparison.OrdinalIgnoreCase);
+
+        decimal totalNetoAcumulado = 0;
+        decimal totalIVAAcumulado = 0;
+
+        // 1. Validar productos y calcular impuestos detallados
+        foreach (var det in p.Detalles)
+        {
+            string sqlValidar = "SELECT costo_actual, existencia, porcentaje_impuesto FROM PRODUCTO WHERE id = @prodid";
+            var dt = ExecuteQuery(sqlValidar, new[] { new SqlParameter("@prodid", det.ProductoId) }, false);
+
+            if (dt.Rows.Count == 0) throw new Exception($"El producto {det.ProductoId} no existe.");
+
+            DataRow row = dt.Rows[0];
+            decimal precioVigente = Convert.ToDecimal(row["costo_actual"]);
+            decimal existenciaDisponible = Convert.ToDecimal(row["existencia"]);
+            decimal pctIVA = Convert.ToDecimal(row["porcentaje_impuesto"]);
+
+            if (existenciaDisponible < det.Cantidad)
+                throw new Exception($"Stock insuficiente para {det.ProductoId}.");
+
+            decimal subtotalLinea = precioVigente * (decimal)det.Cantidad;
+            decimal impuestoLinea = esTradicional ? (subtotalLinea * (pctIVA / 100)) : 0;
+
+            // Llenamos el DTO con el desglose real
+            det.PrecioUnitario = precioVigente;
+            det.PorcentajeImpuesto = esTradicional ? pctIVA : 0;
+            det.ImpuestoTotal = impuestoLinea;
+            det.TotalLineas = subtotalLinea + impuestoLinea;
+
+            totalNetoAcumulado += subtotalLinea;
+            totalIVAAcumulado += impuestoLinea;
+        }
+
+        // 2. Insertar Encabezado
+        string sqlEnc = @"INSERT INTO PROFORMA_ENCABEZADO 
+                          (cliente_id, sucursal_id, fecha, fecha_vencimiento, total_neto, total_impuesto, total, estado)
+                          VALUES (@cid, @sid, GETDATE(), @fvenc, @tneto, @tiva, @total, 'Pendiente');
+                          SELECT SCOPE_IDENTITY();";
+
+        var parametrosEnc = new[] {
+            new SqlParameter("@cid", p.ClienteId),
+            new SqlParameter("@sid", p.SucursalId),
+            new SqlParameter("@fvenc", p.FechaVencimiento),
+            new SqlParameter("@tneto", totalNetoAcumulado),
+            new SqlParameter("@tiva", totalIVAAcumulado),
+            new SqlParameter("@total", totalNetoAcumulado + totalIVAAcumulado)
+        };
+
+        int idGenerado = Convert.ToInt32(ExecuteScalar(sqlEnc, parametrosEnc, false));
+
+        // 3. Insertar Detalles con nuevas columnas SQL
+        foreach (var det in p.Detalles)
+        {
+            string sqlDet = @"INSERT INTO PROFORMA_DETALLE 
+                              (proforma_id, producto_id, cantidad, precio_unitario, porcentaje_impuesto, monto_impuesto, total_linea)
+                              VALUES (@pid, @prodid, @cant, @pre, @pct, @montoIva, @total)";
+
+            ExecuteNonQuery(sqlDet, new[] {
+                new SqlParameter("@pid", idGenerado),
+                new SqlParameter("@prodid", det.ProductoId),
+                new SqlParameter("@cant", det.Cantidad),
+                new SqlParameter("@pre", det.PrecioUnitario),
+                new SqlParameter("@pct", det.PorcentajeImpuesto),
+                new SqlParameter("@montoIva", det.ImpuestoTotal),
+                new SqlParameter("@total", det.TotalLineas)
+            }, false);
+        }
+        return idGenerado;
+    }
+
+    public void ActualizarProforma(ProformaEncabezadoDTO p)
+    {
+        var configFact = new ConfiguracionFactory(_connectionString);
+        var empresa = configFact.ObtenerEmpresa();
+        bool esTradicional = empresa == null || empresa.TipoRegimen.Equals("Tradicional", StringComparison.OrdinalIgnoreCase);
+
+        var proformaActual = ObtenerPorId(p.Id);
+        if (proformaActual == null) throw new Exception("La proforma no existe.");
+        if (proformaActual.Estado != "Pendiente") throw new Exception("No se puede modificar una proforma ya procesada.");
+
+        decimal totalNetoAcumulado = 0;
+        decimal totalIVAAcumulado = 0;
+
+        foreach (var det in p.Detalles)
+        {
+            string sqlValidar = "SELECT costo_actual, porcentaje_impuesto FROM PRODUCTO WHERE id = @prodid";
+            var dt = ExecuteQuery(sqlValidar, new[] { new SqlParameter("@prodid", det.ProductoId) }, false);
+
+            decimal precioVigente = Convert.ToDecimal(dt.Rows[0]["costo_actual"]);
+            decimal pctIVA = Convert.ToDecimal(dt.Rows[0]["porcentaje_impuesto"]);
+
+            decimal subtotalLinea = precioVigente * (decimal)det.Cantidad;
+            decimal impuestoLinea = esTradicional ? (subtotalLinea * (pctIVA / 100)) : 0;
+
+            det.PrecioUnitario = precioVigente;
+            det.PorcentajeImpuesto = esTradicional ? pctIVA : 0;
+            det.ImpuestoTotal = impuestoLinea;
+            det.TotalLineas = subtotalLinea + impuestoLinea;
+
+            totalNetoAcumulado += subtotalLinea;
+            totalIVAAcumulado += impuestoLinea;
+        }
+
+        string sql = @"
+        BEGIN TRANSACTION;
+        BEGIN TRY
+            UPDATE PROFORMA_ENCABEZADO 
+            SET cliente_id = @cid, sucursal_id = @sid, fecha_vencimiento = @fvenc, 
+                total_neto = @tneto, total_impuesto = @tiva, total = @total, estado = @est
+            WHERE id = @id;
+
+            DELETE FROM PROFORMA_DETALLE WHERE proforma_id = @id;
+
+            COMMIT TRANSACTION;
+        END TRY
+        BEGIN CATCH
+            IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+            THROW;
+        END CATCH";
+
+        ExecuteNonQuery(sql, new[] {
+            new SqlParameter("@id", p.Id),
+            new SqlParameter("@cid", p.ClienteId),
+            new SqlParameter("@sid", p.SucursalId),
+            new SqlParameter("@fvenc", p.FechaVencimiento),
+            new SqlParameter("@tneto", totalNetoAcumulado),
+            new SqlParameter("@tiva", totalIVAAcumulado),
+            new SqlParameter("@total", totalNetoAcumulado + totalIVAAcumulado),
+            new SqlParameter("@est", p.Estado)
+        }, false);
+
+        foreach (var det in p.Detalles)
+        {
+            string sqlDet = @"INSERT INTO PROFORMA_DETALLE (proforma_id, producto_id, cantidad, precio_unitario, porcentaje_impuesto, monto_impuesto, total_linea)
+                              VALUES (@pid, @prodid, @cant, @pre, @pct, @montoIva, @total)";
+
+            ExecuteNonQuery(sqlDet, new[] {
+                new SqlParameter("@pid", p.Id),
+                new SqlParameter("@prodid", det.ProductoId),
+                new SqlParameter("@cant", det.Cantidad),
+                new SqlParameter("@pre", det.PrecioUnitario),
+                new SqlParameter("@pct", det.PorcentajeImpuesto),
+                new SqlParameter("@montoIva", det.ImpuestoTotal),
+                new SqlParameter("@total", det.TotalLineas)
+            }, false);
+        }
+    }
+
+    public List<ProformaEncabezadoDTO> ListarProformas(string filtro = "")
+    {
+        string sqlEnc = @"SELECT P.*, C.nombre as ClienteNombre, C.identificacion as ClienteIdentificacion 
+                          FROM PROFORMA_ENCABEZADO P
+                          JOIN CLIENTE C ON P.cliente_id = C.id
+                          WHERE C.nombre LIKE @f OR P.estado LIKE @f OR C.identificacion LIKE @f
+                             OR CAST(P.id AS NVARCHAR) LIKE @f
+                          ORDER BY P.id DESC";
+
+        var dtEnc = ExecuteQuery(sqlEnc, new[] { new SqlParameter("@f", $"%{filtro}%") }, false);
+        var lista = new List<ProformaEncabezadoDTO>();
+        foreach (DataRow r in dtEnc.Rows)
+        {
+            var proforma = MapearEncabezado(r);
+            proforma.Detalles = ObtenerDetallesProforma(proforma.Id);
+            lista.Add(proforma);
+        }
+        return lista;
+    }
+
+    public ProformaEncabezadoDTO ObtenerPorId(int id)
+    {
+        string sql = @"SELECT P.*, C.nombre as ClienteNombre, C.identificacion as ClienteIdentificacion 
+                       FROM PROFORMA_ENCABEZADO P
+                       JOIN CLIENTE C ON P.cliente_id = C.id
+                       WHERE P.id = @id";
+
+        var dt = ExecuteQuery(sql, new[] { new SqlParameter("@id", id) }, false);
+        if (dt.Rows.Count == 0) return null;
+
+        var proforma = MapearEncabezado(dt.Rows[0]);
+        proforma.Detalles = ObtenerDetallesProforma(id);
+        return proforma;
+    }
+
+    public void AnularProforma(int id)
+    {
+        string sql = "UPDATE PROFORMA_ENCABEZADO SET estado = 'Anulada' WHERE id = @id AND estado = 'Pendiente'";
+        ExecuteNonQuery(sql, new[] { new SqlParameter("@id", id) }, false);
+    }
+
+    private List<ProformaDetalleDTO> ObtenerDetallesProforma(int proformaId)
+    {
+        var detalles = new List<ProformaDetalleDTO>();
+        string sqlDet = @"SELECT D.*, P.nombre as ProductoNombre, P.codigo_barras
+                          FROM PROFORMA_DETALLE D
+                          JOIN PRODUCTO P ON D.producto_id = P.id
+                          WHERE D.proforma_id = @pid";
+
+        var dtDet = ExecuteQuery(sqlDet, new[] { new SqlParameter("@pid", proformaId) }, false);
+        foreach (DataRow rd in dtDet.Rows)
+        {
+            detalles.Add(new ProformaDetalleDTO
+            {
+                ProductoId = Convert.ToInt32(rd["producto_id"]),
+                ProductoNombre = rd["ProductoNombre"].ToString(),
+                ProductoCodigo = rd["codigo_barras"]?.ToString() ?? rd["producto_id"].ToString(),
+                Cantidad = Convert.ToDecimal(rd["cantidad"]),
+                PrecioUnitario = Convert.ToDecimal(rd["precio_unitario"]),
+                PorcentajeImpuesto = rd.Table.Columns.Contains("porcentaje_impuesto") ? Convert.ToDecimal(rd["porcentaje_impuesto"]) : 0,
+                ImpuestoTotal = rd.Table.Columns.Contains("monto_impuesto") ? Convert.ToDecimal(rd["monto_impuesto"]) : 0,
+                TotalLineas = Convert.ToDecimal(rd["total_linea"])
+            });
+        }
+        return detalles;
+    }
+
+    private ProformaEncabezadoDTO MapearEncabezado(DataRow r)
+    {
+        return new ProformaEncabezadoDTO
+        {
+            Id = Convert.ToInt32(r["id"]),
+            ClienteId = Convert.ToInt32(r["cliente_id"]),
+            ClienteNombre = r["ClienteNombre"].ToString(),
+            ClienteIdentificacion = r.Table.Columns.Contains("ClienteIdentificacion") ? r["ClienteIdentificacion"].ToString() : string.Empty,
+            SucursalId = r.Table.Columns.Contains("sucursal_id") ? Convert.ToInt32(r["sucursal_id"]) : 0,
+            TotalNeto = r.Table.Columns.Contains("total_neto") ? Convert.ToDecimal(r["total_neto"]) : 0,
+            TotalImpuesto = r.Table.Columns.Contains("total_impuesto") ? Convert.ToDecimal(r["total_impuesto"]) : 0,
+            Total = Convert.ToDecimal(r["total"]),
+            Fecha = Convert.ToDateTime(r["fecha"]),
+            FechaVencimiento = r.Table.Columns.Contains("fecha_vencimiento") ? Convert.ToDateTime(r["fecha_vencimiento"]) : DateTime.MinValue,
+            Estado = r["estado"].ToString() ?? "Pendiente"
+        };
+    }
+
+    public List<ProformaEncabezadoDTO> ListarPorCliente(int clienteId)
+    {
+        string sqlEnc = @"SELECT P.*, C.nombre as ClienteNombre, C.identificacion as ClienteIdentificacion 
+                      FROM PROFORMA_ENCABEZADO P
+                      JOIN CLIENTE C ON P.cliente_id = C.id
+                      WHERE P.cliente_id = @cid
+                      ORDER BY P.id DESC";
+
+        var dtEnc = ExecuteQuery(sqlEnc, new[] { new SqlParameter("@cid", clienteId) }, false);
+        var lista = new List<ProformaEncabezadoDTO>();
+
+        foreach (DataRow r in dtEnc.Rows)
+        {
+            var proforma = MapearEncabezado(r);
+            proforma.Detalles = ObtenerDetallesProforma(proforma.Id);
+            lista.Add(proforma);
+        }
+        return lista;
+    }
+
+    public string ConvertirAFactura(int proformaId, int usuarioId, string medioPago)
+    {
+        string sql = @"
+        BEGIN TRANSACTION;
+        BEGIN TRY
+            DECLARE @clienteId INT, @sucursalId INT, @totalNeto DECIMAL(18,2), @totalImpuesto DECIMAL(18,2), @totalComprobante DECIMAL(18,2), @facturaId INT;
+            DECLARE @consecutivo NVARCHAR(50) = 'FAC-' + CAST(NEXT VALUE FOR Seq_Consecutivos AS NVARCHAR(20));
+
+            SELECT @clienteId = cliente_id, @sucursalId = sucursal_id, @totalNeto = total_neto, @totalImpuesto = total_impuesto, @totalComprobante = total
+            FROM PROFORMA_ENCABEZADO WHERE id = @profId;
+
+            IF @clienteId IS NULL THROW 50000, 'La proforma no existe.', 1;
+
+            INSERT INTO FACTURA_ENCABEZADO (cliente_id, sucursal_id, usuario_id, consecutivo, clave_numerica, 
+                                          total_neto, total_impuesto, total_comprobante, medio_pago, 
+                                          estado_hacienda, condicion_venta, fecha)
+            VALUES (@clienteId, @sucursalId, @usuarioId, @consecutivo, '00000', 
+                    @totalNeto, @totalImpuesto, @totalComprobante, @medioPago, 'Aceptado', 'Contado', GETDATE());
+            
+            SET @facturaId = SCOPE_IDENTITY();
+
+            -- Migración de detalle respetando el desglose de la proforma
+            INSERT INTO FACTURA_DETALLE (factura_id, producto_id, cantidad, precio_unitario, porcentaje_impuesto, monto_impuesto, total_linea)
+            SELECT @facturaId, d.producto_id, d.cantidad, d.precio_unitario, d.porcentaje_impuesto, d.monto_impuesto, d.total_linea
+            FROM PROFORMA_DETALLE d WHERE d.proforma_id = @profId;
+
+            UPDATE P SET P.existencia = P.existencia - D.cantidad
+            FROM PRODUCTO P INNER JOIN PROFORMA_DETALLE D ON P.id = D.producto_id
+            WHERE D.proforma_id = @profId;
+
+            UPDATE PROFORMA_ENCABEZADO SET estado = 'Facturada' WHERE id = @profId;
+
+            COMMIT TRANSACTION;
+            SELECT @consecutivo;
+        END TRY
+        BEGIN CATCH
+            IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+            THROW;
+        END CATCH";
+
+        var parametros = new[] {
+            new SqlParameter("@profId", proformaId),
+            new SqlParameter("@usuarioId", usuarioId),
+            new SqlParameter("@medioPago", medioPago)
+        };
+
+        object result = ExecuteScalar(sql, parametros, false);
+        return result?.ToString() ?? string.Empty;
     }
 }.
  
@@ -3410,7 +4455,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("IntegraPro.DataAccess")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+93f2d1c76915b33e444d362ddb68d39ad359438c")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+9e8e694dd6cd375ed2793f3e6727870d2246f0f3")]
 [assembly: System.Reflection.AssemblyProductAttribute("IntegraPro.DataAccess")]
 [assembly: System.Reflection.AssemblyTitleAttribute("IntegraPro.DataAccess")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
@@ -3456,6 +4501,38 @@ public class AbonoDTO
     public decimal MontoAbonado { get; set; }
     public string MedioPago { get; set; } = "Efectivo";
     public string? Referencia { get; set; }
+}.
+ 
+--- RUTA: C:\Users\Luis\source\repos\Integra\IntegraPro\IntegraPro.DTO\Models\AbonoHistorialDTO.cs --- 
+--- NOMBRE: AbonoHistorialDTO.cs --- 
+ 
+﻿namespace IntegraPro.DTO.Models;
+
+public class AbonoHistorialDTO
+{
+    public int Id { get; set; }
+    public decimal Monto { get; set; }
+    public DateTime FechaAbono { get; set; }
+    public string MetodoPago { get; set; } = string.Empty;
+    public string NumeroReferencia { get; set; } = string.Empty;
+    public string NombreUsuario { get; set; } = string.Empty; // Quién recibió el dinero
+    public string Notas { get; set; } = string.Empty;
+}.
+ 
+--- RUTA: C:\Users\Luis\source\repos\Integra\IntegraPro\IntegraPro.DTO\Models\AlertaCxcDTO.cs --- 
+--- NOMBRE: AlertaCxcDTO.cs --- 
+ 
+﻿namespace IntegraPro.DTO.Models;
+
+public class AlertaCxcDTO
+{
+    public int FacturaId { get; set; }
+    public string ClienteNombre { get; set; } = string.Empty;
+    public string NumeroFactura { get; set; } = string.Empty;
+    public decimal SaldoPendiente { get; set; }
+    public DateTime FechaVencimiento { get; set; }
+    public int DiasVencidos { get; set; } // Negativo si falta para vencer, positivo si ya venció
+    public string NivelRiesgo { get; set; } = string.Empty; // Bajo, Medio, Alto (Mora)
 }.
  
 --- RUTA: C:\Users\Luis\source\repos\Integra\IntegraPro\IntegraPro.DTO\Models\AlertaPagoDTO.cs --- 
@@ -3585,9 +4662,13 @@ public class EmpresaDTO
 {
     public int Id { get; set; }
     public string NombreComercial { get; set; } = string.Empty;
+    public string RazonSocial { get; set; } = string.Empty; // Agregado
     public string CedulaJuridica { get; set; } = string.Empty;
-    public string CorreoNotificaciones { get; set; } = string.Empty;
     public string TipoRegimen { get; set; } = "Tradicional";
+    public string Telefono { get; set; } = string.Empty; // Agregado
+    public string CorreoNotificaciones { get; set; } = string.Empty;
+    public string SitioWeb { get; set; } = string.Empty; // Agregado
+    public string? Logo { get; set; } // Agregado (Nombre del archivo o ruta)
 }
 
 public class LicenciaDTO
@@ -3598,6 +4679,25 @@ public class LicenciaDTO
     public string Estado { get; set; } = "Demo";
 }
 .
+ 
+--- RUTA: C:\Users\Luis\source\repos\Integra\IntegraPro\IntegraPro.DTO\Models\CxcConsultaDTO.cs --- 
+--- NOMBRE: CxcConsultaDTO.cs --- 
+ 
+﻿namespace IntegraPro.DTO.Models;
+
+public class CxcConsultaDTO
+{
+    public int FacturaId { get; set; }
+    public string NumeroFactura { get; set; } = string.Empty;
+    public string ClienteNombre { get; set; } = string.Empty;
+    public string ClienteCedula { get; set; } = string.Empty;
+    public DateTime FechaEmision { get; set; }
+    public DateTime FechaVencimiento { get; set; }
+    public decimal MontoTotal { get; set; }
+    public decimal SaldoPendiente { get; set; }
+    public string Estado { get; set; } = string.Empty; // Pendiente, Pagada, Vencida
+    public int DiasCredito { get; set; }
+}.
  
 --- RUTA: C:\Users\Luis\source\repos\Integra\IntegraPro\IntegraPro.DTO\Models\DeudaConsultaDTO.cs --- 
 --- NOMBRE: DeudaConsultaDTO.cs --- 
@@ -3751,6 +4851,44 @@ public class ProductoComposicionDTO
     public decimal CantidadNecesaria { get; set; }
 }.
  
+--- RUTA: C:\Users\Luis\source\repos\Integra\IntegraPro\IntegraPro.DTO\Models\ProformaDTO.cs --- 
+--- NOMBRE: ProformaDTO.cs --- 
+ 
+﻿namespace IntegraPro.DTO.Models;
+
+public class ProformaEncabezadoDTO
+{
+    public int Id { get; set; }
+    public int ClienteId { get; set; }
+    public string? ClienteNombre { get; set; }
+    public string? ClienteIdentificacion { get; set; }
+    public int SucursalId { get; set; }
+    public DateTime Fecha { get; set; }
+    public DateTime FechaVencimiento { get; set; }
+
+    // --- Totales del Encabezado (Suma de todos los detalles) ---
+    public decimal TotalNeto { get; set; }      // Subtotal sin impuestos
+    public decimal TotalImpuesto { get; set; }  // Total de IVAs acumulados
+    public decimal Total { get; set; }          // Monto final (Neto + Impuesto)
+
+    public string Estado { get; set; } = "Pendiente";
+    public List<ProformaDetalleDTO> Detalles { get; set; } = new();
+}
+
+public class ProformaDetalleDTO
+{
+    public int ProductoId { get; set; }
+    public string? ProductoCodigo { get; set; }
+    public string? ProductoNombre { get; set; }
+    public decimal Cantidad { get; set; }
+
+    // --- Desglose por Línea ---
+    public decimal PrecioUnitario { get; set; }    // Precio Neto (sacado de 'costo_actual')
+    public decimal PorcentajeImpuesto { get; set; } // El % aplicado (ej: 13, 1, 0)
+    public decimal ImpuestoTotal { get; set; }      // El monto de dinero del impuesto para esta línea
+    public decimal TotalLineas { get; set; }        // (Cantidad * PrecioUnitario) + ImpuestoTotal
+}.
+ 
 --- RUTA: C:\Users\Luis\source\repos\Integra\IntegraPro\IntegraPro.DTO\Models\ProveedorDTO.cs --- 
 --- NOMBRE: ProveedorDTO.cs --- 
  
@@ -3764,6 +4902,19 @@ public class ProveedorDTO
     public string? Correo { get; set; }
     public string? Telefono { get; set; }
     public bool Activo { get; set; } = true;
+}.
+ 
+--- RUTA: C:\Users\Luis\source\repos\Integra\IntegraPro\IntegraPro.DTO\Models\ResumenCxcDTO.cs --- 
+--- NOMBRE: ResumenCxcDTO.cs --- 
+ 
+﻿namespace IntegraPro.DTO.Models;
+
+public class ResumenCxcDTO
+{
+    public decimal TotalPorCobrar { get; set; }
+    public decimal TotalVencido { get; set; }
+    public int CantidadFacturasPendientes { get; set; }
+    public int ClientesMorosos { get; set; }
 }.
  
 --- RUTA: C:\Users\Luis\source\repos\Integra\IntegraPro\IntegraPro.DTO\Models\ResumenCxpDTO.cs --- 
@@ -3867,7 +5018,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("IntegraPro.DTO")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+93f2d1c76915b33e444d362ddb68d39ad359438c")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+9e8e694dd6cd375ed2793f3e6727870d2246f0f3")]
 [assembly: System.Reflection.AssemblyProductAttribute("IntegraPro.DTO")]
 [assembly: System.Reflection.AssemblyTitleAttribute("IntegraPro.DTO")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
