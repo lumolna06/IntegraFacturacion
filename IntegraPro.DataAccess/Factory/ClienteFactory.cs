@@ -103,4 +103,32 @@ public class ClienteFactory(string connectionString) : MasterDao(connectionStrin
 
         ExecuteNonQuery(sql, p, false);
     }
+
+    public ClienteDTO? ObtenerPorIdentificacion(string identificacion)
+    {
+        string sql = "SELECT * FROM CLIENTE WHERE identificacion = @cedula";
+        var dt = ExecuteQuery(sql, [new SqlParameter("@cedula", identificacion)], false);
+
+        if (dt == null || dt.Rows.Count == 0) return null;
+
+        var row = dt.Rows[0];
+
+        return new ClienteDTO
+        {
+            Id = Convert.ToInt32(row["id"]),
+            Identificacion = row["identificacion"].ToString(),
+            Nombre = row["nombre"].ToString(),
+            Correo = row["correo"].ToString(),
+
+            // ASIGNACIONES FALTANTES:
+            // Verificamos si es nulo en DB para evitar excepciones
+            Telefono = row["telefono"] != DBNull.Value ? row["telefono"].ToString() : "",
+
+            // El nombre de la columna debe ser exacto al de tu tabla (ej: limite_credito)
+            LimiteCredito = row["limite_credito"] != DBNull.Value ? Convert.ToDecimal(row["limite_credito"]) : 0,
+
+            Activo = row["activo"] != DBNull.Value && Convert.ToBoolean(row["activo"])
+        };
+    }
+
 }

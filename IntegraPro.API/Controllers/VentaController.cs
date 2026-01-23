@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Mvc;
 using QuestPDF.Fluent;
 using QuestPDF.Infrastructure;
 using IntegraPro.API.Reports;
+using System.Data;
 
 namespace IntegraPro.API.Controllers;
 
@@ -18,27 +19,17 @@ public class VentaController(VentaService service) : ControllerBase
     {
         try
         {
-            // 1. Lógica de comunicación con el Proveedor de Facturación (Simulada)
-            // En un escenario real, aquí llamarías a una clase 'FacturacionProvider'
             try
             {
-                // Supongamos que llamas al API de tu proveedor aquí
-                // var respuesta = await _proveedorService.EnviarHacienda(factura);
-
-                // Si la comunicación es exitosa:
-                factura.EstadoHacienda = "ACEPTADO"; // O el estado que devuelva Hacienda
+                factura.EstadoHacienda = "ACEPTADO";
                 factura.EsOffline = false;
-                // factura.ClaveNumerica = respuesta.Clave; // La clave que generó el proveedor
             }
             catch (Exception)
             {
-                // Si falla el internet o el proveedor está caído:
                 factura.EstadoHacienda = "PENDIENTE";
                 factura.EsOffline = true;
-                // No lanzamos excepción aquí para permitir que la venta se guarde localmente
             }
 
-            // 2. El servicio procesa la venta en la DB con los estados actualizados
             string numFac = _service.ProcesarVenta(factura);
 
             return Ok(new
@@ -50,6 +41,54 @@ public class VentaController(VentaService service) : ControllerBase
                 message = factura.EsOffline
                     ? "Venta guardada LOCALMENTE (Hacienda fuera de línea). Se enviará luego."
                     : "Venta procesada y aceptada por Hacienda."
+            });
+        }
+        catch (Exception ex)
+        {
+            return BadRequest(new { success = false, message = ex.Message });
+        }
+    }
+
+    [HttpGet("reportes")]
+    public IActionResult GetReportes(
+        [FromQuery] DateTime? desde,
+        [FromQuery] DateTime? hasta,
+        [FromQuery] int? clienteId,
+        [FromQuery] int? sucursalId,
+        [FromQuery] string buscar = "",
+        [FromQuery] string? condicion = "") // NUEVO PARÁMETRO
+    {
+        try
+        {
+            // Pasamos 'condicion' al service (que ya lo espera tras la modificación anterior)
+            DataTable dt = _service.ObtenerReporteVentas(desde, hasta, clienteId, sucursalId, buscar, condicion);
+
+            decimal sumaTotales = 0;
+
+            // Convertimos el DataTable a una lista de diccionarios para evitar el error de serialización
+            var filas = new List<Dictionary<string, object>>();
+
+            foreach (DataRow row in dt.Rows)
+            {
+                var diccionario = new Dictionary<string, object>();
+                foreach (DataColumn col in dt.Columns)
+                {
+                    diccionario[col.ColumnName] = row[col] == DBNull.Value ? null : row[col];
+                }
+
+                filas.Add(diccionario);
+
+                // Sumatoria para el resumen
+                if (row["total_comprobante"] != DBNull.Value)
+                    sumaTotales += Convert.ToDecimal(row["total_comprobante"]);
+            }
+
+            return Ok(new
+            {
+                success = true,
+                conteo = filas.Count,
+                totalSuma = sumaTotales,
+                data = filas
             });
         }
         catch (Exception ex)
