@@ -54,9 +54,7 @@ public class VentaFactory(string connectionString) : MasterDao(connectionString)
                         }
                     }
 
-                    // 2. LÓGICA DE CLAVE Y CONSECUTIVO
-                    // Si el controller ya envió la clave (porque llamó al proveedor), usamos esa.
-                    // Si no, la generamos aquí como contingencia.
+                    // FACTURACIÓN ELECTRÓNICA (HACIENDA)
                     string consecutivoHacienda = venta.Consecutivo;
                     string claveNumerica = venta.ClaveNumerica;
 
@@ -69,7 +67,9 @@ public class VentaFactory(string connectionString) : MasterDao(connectionString)
                         claveNumerica = GenerarClaveHacienda(cedulaEmisor, consecutivoHacienda);
                     }
 
-                    // INSERT DINÁMICO (Usa el estado enviado por el Controller o 'LOCAL' por defecto)
+                    string estadoFinalHacienda = venta.EstadoHacienda ?? "LOCAL";
+
+                    // 2. INSERTAR ENCABEZADO
                     string sqlEnc = @"INSERT INTO FACTURA_ENCABEZADO 
                                      (cliente_id, sucursal_id, usuario_id, consecutivo, clave_numerica, fecha, 
                                       condicion_venta, medio_pago, total_neto, total_impuesto, total_comprobante, 
@@ -89,7 +89,7 @@ public class VentaFactory(string connectionString) : MasterDao(connectionString)
                         new SqlParameter("@neto", acumuladoNeto),
                         new SqlParameter("@iva", acumuladoImpuesto),
                         new SqlParameter("@total", acumuladoNeto + acumuladoImpuesto),
-                        new SqlParameter("@estado", venta.EstadoHacienda ?? "LOCAL"),
+                        new SqlParameter("@estado", estadoFinalHacienda),
                         new SqlParameter("@offline", venta.EsOffline ? 1 : 0)
                     };
 
@@ -99,8 +99,8 @@ public class VentaFactory(string connectionString) : MasterDao(connectionString)
                     foreach (var det in detallesProcesados)
                     {
                         string sqlDet = @"INSERT INTO FACTURA_DETALLE 
-                                         (factura_id, producto_id, cantidad, precio_unitario, monto_impuesto, total_linea, porcentaje_impuesto) 
-                                         VALUES (@fid, @pid, @cant, @pre, @miva, @tot, @piva)";
+                                          (factura_id, producto_id, cantidad, precio_unitario, monto_impuesto, total_linea, porcentaje_impuesto) 
+                                          VALUES (@fid, @pid, @cant, @pre, @miva, @tot, @piva)";
 
                         ExecuteNonQueryInTransaction(sqlDet, [
                             new SqlParameter("@fid", facturaId),
@@ -112,7 +112,6 @@ public class VentaFactory(string connectionString) : MasterDao(connectionString)
                             new SqlParameter("@piva", det.PorcentajeImpuesto)
                         ], connection, transaction);
 
-                        // Kardex
                         string sqlKardex = @"INSERT INTO MOVIMIENTO_INVENTARIO 
                                            (producto_id, usuario_id, fecha, tipo_movimiento, cantidad, documento_referencia, notas) 
                                            VALUES (@pid, @uid, GETDATE(), 'SALIDA', @cant, @ref, 'Venta Automática')";
@@ -148,13 +147,11 @@ public class VentaFactory(string connectionString) : MasterDao(connectionString)
         return pais + dia + mes + anio + cedula + consecutivo + situacion + codigoSeguridad;
     }
 
-    // Métodos ObtenerPorId y ListarDetalles se mantienen igual...
-
     public FacturaDTO? ObtenerPorId(int id)
     {
         string sql = @"SELECT f.*, 
-                             ISNULL(c.nombre, 'CLIENTE CONTADO') as ClienteNombre, 
-                             c.identificacion as ClienteIdentificacion 
+                               ISNULL(c.nombre, 'CLIENTE CONTADO') as ClienteNombre, 
+                               c.identificacion as ClienteIdentificacion 
                       FROM FACTURA_ENCABEZADO f 
                       LEFT JOIN CLIENTE c ON f.cliente_id = c.id 
                       WHERE f.id = @id";
@@ -207,5 +204,49 @@ public class VentaFactory(string connectionString) : MasterDao(connectionString)
             }
         }
         return lista;
+    }
+
+    // MODIFICADO: Ahora incluye filtro por condicionVenta
+    public DataTable ObtenerReporteVentas(DateTime? desde, DateTime? hasta, int? clienteId, int? sucursalId, string busqueda, string? condicionVenta = "")
+    {
+        string sql = "SELECT * FROM VW_REPORTE_VENTAS WHERE 1=1";
+        List<SqlParameter> parametros = new List<SqlParameter>();
+
+        if (desde.HasValue)
+        {
+            sql += " AND fecha >= @desde";
+            parametros.Add(new SqlParameter("@desde", desde.Value));
+        }
+        if (hasta.HasValue)
+        {
+            sql += " AND fecha <= @hasta";
+            parametros.Add(new SqlParameter("@hasta", hasta.Value.Date.AddDays(1).AddSeconds(-1)));
+        }
+        if (clienteId.HasValue)
+        {
+            sql += " AND cliente_id = @cId";
+            parametros.Add(new SqlParameter("@cId", clienteId.Value));
+        }
+        if (sucursalId.HasValue)
+        {
+            sql += " AND sucursal_id = @sId";
+            parametros.Add(new SqlParameter("@sId", sucursalId.Value));
+        }
+
+        // FILTRO DE CONDICIÓN DE VENTA
+        if (!string.IsNullOrEmpty(condicionVenta))
+        {
+            sql += " AND condicion_venta = @condicion";
+            parametros.Add(new SqlParameter("@condicion", condicionVenta));
+        }
+
+        if (!string.IsNullOrEmpty(busqueda))
+        {
+            sql += " AND (consecutivo LIKE @bus OR cliente_cedula LIKE @bus OR cliente_nombre LIKE @bus)";
+            parametros.Add(new SqlParameter("@bus", "%" + busqueda + "%"));
+        }
+
+        sql += " ORDER BY fecha DESC";
+        return ExecuteQuery(sql, parametros.ToArray(), false);
     }
 }

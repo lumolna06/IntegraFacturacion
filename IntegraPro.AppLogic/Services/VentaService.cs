@@ -1,5 +1,6 @@
 ﻿using IntegraPro.DataAccess.Factory;
 using IntegraPro.DTO.Models;
+using System.Data; // Necesario para manejar el reporte como DataTable
 
 namespace IntegraPro.AppLogic.Services;
 
@@ -36,16 +37,13 @@ public class VentaService(
             var (saldoActual, limite, activo) = _cliFactory.ObtenerEstadoCredito(factura.ClienteId);
             if (!activo) throw new Exception("El cliente seleccionado se encuentra INACTIVO.");
 
-            // OJO: Aquí el Factory recalculará el total exacto. 
-            // Si el cliente está al límite, es mejor validar con un margen.
             if ((saldoActual + factura.TotalComprobante) > limite)
             {
                 throw new Exception($"Límite de crédito excedido. Saldo: {saldoActual:N2}, Límite: {limite:N2}.");
             }
         }
 
-        // 3. EJECUCIÓN (Aquí el Factory genera Clave/Consecutivo si no vienen)
-        // El Factory ahora recibe el objeto completo con EstadoHacienda y EsOffline
+        // 3. EJECUCIÓN
         string consecutivoGenerado = _ventaFactory.CrearFactura(factura);
 
         // 4. ACTUALIZAR SALDO (Solo si es Crédito)
@@ -55,6 +53,15 @@ public class VentaService(
         }
 
         return consecutivoGenerado;
+    }
+
+    // ==========================================
+    // MÉTODO PARA REPORTES (ACTUALIZADO CON CONDICIÓN)
+    // ==========================================
+    public DataTable ObtenerReporteVentas(DateTime? desde, DateTime? hasta, int? clienteId, int? sucursalId, string busqueda, string? condicionVenta)
+    {
+        // Ahora pasamos también el parámetro de condición (Contado/Crédito)
+        return _ventaFactory.ObtenerReporteVentas(desde, hasta, clienteId, sucursalId, busqueda, condicionVenta);
     }
 
     public FacturaDTO ObtenerFacturaParaImpresion(int id)

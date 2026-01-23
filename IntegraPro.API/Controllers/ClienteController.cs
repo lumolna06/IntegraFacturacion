@@ -52,4 +52,26 @@ public class ClienteController(IConfiguration config) : ControllerBase
             return BadRequest(new { success = false, message = ex.Message });
         }
     }
+
+    // ==========================================
+    // NUEVO: BUSCAR CLIENTE POR IDENTIFICACIÓN
+    // ==========================================
+    [HttpGet("buscar/{identificacion}")]
+    public IActionResult GetByIdentificacion(string identificacion)
+    {
+        try
+        {
+            // Este método debe existir en tu ClienteFactory
+            var cliente = _factory.ObtenerPorIdentificacion(identificacion);
+
+            if (cliente == null)
+                return NotFound(new { success = false, message = "No se encontró un cliente con esa identificación." });
+
+            return Ok(new { success = true, data = cliente });
+        }
+        catch (Exception ex)
+        {
+            return BadRequest(new { success = false, message = ex.Message });
+        }
+    }
 }
