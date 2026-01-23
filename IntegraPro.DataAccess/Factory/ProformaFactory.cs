@@ -268,52 +268,69 @@ public class ProformaFactory(string connectionString) : MasterDao(connectionStri
         }
         return lista;
     }
-
     public string ConvertirAFactura(int proformaId, int usuarioId, string medioPago)
     {
         string sql = @"
-        BEGIN TRANSACTION;
-        BEGIN TRY
-            DECLARE @clienteId INT, @sucursalId INT, @totalNeto DECIMAL(18,2), @totalImpuesto DECIMAL(18,2), @totalComprobante DECIMAL(18,2), @facturaId INT;
-            DECLARE @consecutivo NVARCHAR(50) = 'FAC-' + CAST(NEXT VALUE FOR Seq_Consecutivos AS NVARCHAR(20));
+BEGIN TRANSACTION;
+BEGIN TRY
+    DECLARE @clienteId INT, @sucursalId INT, @totalNeto DECIMAL(18,2), @totalImpuesto DECIMAL(18,2), 
+            @totalComprobante DECIMAL(18,2), @facturaId INT, @estadoActual NVARCHAR(20);
+    DECLARE @consecutivo NVARCHAR(50) = 'FAC-' + CAST(NEXT VALUE FOR Seq_Consecutivos AS NVARCHAR(20));
 
-            SELECT @clienteId = cliente_id, @sucursalId = sucursal_id, @totalNeto = total_neto, @totalImpuesto = total_impuesto, @totalComprobante = total
-            FROM PROFORMA_ENCABEZADO WHERE id = @profId;
+    -- 1. Obtener datos de proforma
+    SELECT @clienteId = cliente_id, @sucursalId = sucursal_id, @totalNeto = total_neto, 
+           @totalImpuesto = total_impuesto, @totalComprobante = total, @estadoActual = estado 
+    FROM PROFORMA_ENCABEZADO WHERE id = @profId;
 
-            IF @clienteId IS NULL THROW 50000, 'La proforma no existe.', 1;
+    -- 2. Validaciones de estado
+    IF @clienteId IS NULL THROW 50000, 'La proforma no existe.', 1;
+    IF @estadoActual = 'Facturada' THROW 50002, 'Esta proforma ya fue facturada.', 1;
+    IF @estadoActual = 'Anulada' THROW 50003, 'No se puede facturar una proforma anulada.', 1;
 
-            INSERT INTO FACTURA_ENCABEZADO (cliente_id, sucursal_id, usuario_id, consecutivo, clave_numerica, 
-                                          total_neto, total_impuesto, total_comprobante, medio_pago, 
-                                          estado_hacienda, condicion_venta, fecha)
-            VALUES (@clienteId, @sucursalId, @usuarioId, @consecutivo, '00000', 
-                    @totalNeto, @totalImpuesto, @totalComprobante, @medioPago, 'Aceptado', 'Contado', GETDATE());
-            
-            SET @facturaId = SCOPE_IDENTITY();
+    -- 3. VALIDAR STOCK (Preventivo)
+    IF EXISTS (
+        SELECT 1 FROM PRODUCTO P INNER JOIN PROFORMA_DETALLE D ON P.id = D.producto_id 
+        WHERE D.proforma_id = @profId AND P.existencia < D.cantidad
+    )
+    BEGIN
+        THROW 50001, 'Stock insuficiente para procesar la conversión.', 1;
+    END
 
-            -- Migración de detalle respetando el desglose de la proforma
-            INSERT INTO FACTURA_DETALLE (factura_id, producto_id, cantidad, precio_unitario, porcentaje_impuesto, monto_impuesto, total_linea)
-            SELECT @facturaId, d.producto_id, d.cantidad, d.precio_unitario, d.porcentaje_impuesto, d.monto_impuesto, d.total_linea
-            FROM PROFORMA_DETALLE d WHERE d.proforma_id = @profId;
+    -- 4. Crear Factura Encabezado
+    INSERT INTO FACTURA_ENCABEZADO (cliente_id, sucursal_id, usuario_id, consecutivo, clave_numerica, 
+                                  total_neto, total_impuesto, total_comprobante, medio_pago, 
+                                  estado_hacienda, condicion_venta, fecha, es_offline)
+    VALUES (@clienteId, @sucursalId, @usuarioId, @consecutivo, '00000', 
+            @totalNeto, @totalImpuesto, @totalComprobante, @medioPago, 'LOCAL', 'Contado', GETDATE(), 1);
+    
+    SET @facturaId = SCOPE_IDENTITY();
 
-            UPDATE P SET P.existencia = P.existencia - D.cantidad
-            FROM PRODUCTO P INNER JOIN PROFORMA_DETALLE D ON P.id = D.producto_id
-            WHERE D.proforma_id = @profId;
+    -- 5. Crear Factura Detalle
+    INSERT INTO FACTURA_DETALLE (factura_id, producto_id, cantidad, precio_unitario, porcentaje_impuesto, monto_impuesto, total_linea)
+    SELECT @facturaId, d.producto_id, d.cantidad, d.precio_unitario, d.porcentaje_impuesto, d.monto_impuesto, d.total_linea
+    FROM PROFORMA_DETALLE d WHERE d.proforma_id = @profId;
 
-            UPDATE PROFORMA_ENCABEZADO SET estado = 'Facturada' WHERE id = @profId;
+    -- 6. REGISTRAR EN KARDEX (Esto dispara el Trigger y rebaja el stock UNA SOLA VEZ)
+    INSERT INTO MOVIMIENTO_INVENTARIO (producto_id, usuario_id, fecha, tipo_movimiento, cantidad, documento_referencia, notas)
+    SELECT d.producto_id, @usuarioId, GETDATE(), 'SALIDA', d.cantidad, @consecutivo, 'Fact. desde Proforma #' + CAST(@profId AS NVARCHAR(10))
+    FROM PROFORMA_DETALLE d WHERE d.proforma_id = @profId;
 
-            COMMIT TRANSACTION;
-            SELECT @consecutivo;
-        END TRY
-        BEGIN CATCH
-            IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
-            THROW;
-        END CATCH";
+    -- 7. Finalizar Proforma
+    UPDATE PROFORMA_ENCABEZADO SET estado = 'Facturada' WHERE id = @profId;
+
+    COMMIT TRANSACTION;
+    SELECT @consecutivo;
+END TRY
+BEGIN CATCH
+    IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+    THROW;
+END CATCH";
 
         var parametros = new[] {
-            new SqlParameter("@profId", proformaId),
-            new SqlParameter("@usuarioId", usuarioId),
-            new SqlParameter("@medioPago", medioPago)
-        };
+        new SqlParameter("@profId", proformaId),
+        new SqlParameter("@usuarioId", usuarioId),
+        new SqlParameter("@medioPago", medioPago)
+    };
 
         object result = ExecuteScalar(sql, parametros, false);
         return result?.ToString() ?? string.Empty;
