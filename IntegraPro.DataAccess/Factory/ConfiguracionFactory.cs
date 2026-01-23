@@ -10,15 +10,22 @@ public class ConfiguracionFactory : MasterDao
 {
     public ConfiguracionFactory(string connectionString) : base(connectionString) { }
 
-    // ==========================================
-    // MÉTODO AGREGADO: LECTURA DE DATOS DE EMPRESA
-    // ==========================================
     /// <summary>
-    /// Obtiene los datos comerciales de la empresa para los encabezados de documentos.
+    /// Obtiene todos los datos comerciales de la empresa de la tabla EMPRESA.
     /// </summary>
     public EmpresaDTO? ObtenerEmpresa()
     {
-        string sql = "SELECT TOP 1 id, nombre_comercial, cedula_juridica, correo_notificaciones, tipo_regimen FROM EMPRESA";
+        string sql = @"SELECT TOP 1 
+                        id, 
+                        nombre_comercial, 
+                        razon_social, 
+                        cedula_juridica, 
+                        tipo_regimen, 
+                        telefono, 
+                        correo_notificaciones, 
+                        sitio_web, 
+                        logo 
+                       FROM EMPRESA";
 
         DataTable dt = ExecuteQuery(sql, null, false);
 
@@ -29,14 +36,55 @@ public class ConfiguracionFactory : MasterDao
         {
             Id = Convert.ToInt32(row["id"]),
             NombreComercial = row["nombre_comercial"]?.ToString() ?? string.Empty,
+            RazonSocial = row["razon_social"]?.ToString() ?? string.Empty,
             CedulaJuridica = row["cedula_juridica"]?.ToString() ?? string.Empty,
+            TipoRegimen = row["tipo_regimen"]?.ToString() ?? "Tradicional",
+            Telefono = row["telefono"]?.ToString() ?? string.Empty,
             CorreoNotificaciones = row["correo_notificaciones"]?.ToString() ?? string.Empty,
-            TipoRegimen = row["tipo_regimen"]?.ToString() ?? "Tradicional"
+            SitioWeb = row["sitio_web"]?.ToString() ?? string.Empty,
+            Logo = row["logo"]?.ToString()
         };
     }
 
     /// <summary>
-    /// Registra la licencia inicial en la base de datos tras validar la llave de activación.
+    /// Guarda o actualiza los datos comerciales de la empresa con validación anti-basura.
+    /// </summary>
+    public void GuardarEmpresa(EmpresaDTO empresa)
+    {
+        // Lógica de protección: Solo actualiza si el valor no es nulo, no está vacío y no es "string"
+        string sql = @"
+            UPDATE EMPRESA SET 
+                nombre_comercial = CASE WHEN ISNULL(@nom, '') NOT IN ('', 'string') THEN @nom ELSE nombre_comercial END,
+                razon_social = CASE WHEN ISNULL(@raz, '') NOT IN ('', 'string') THEN @raz ELSE razon_social END,
+                cedula_juridica = CASE WHEN ISNULL(@ced, '') NOT IN ('', 'string') THEN @ced ELSE cedula_juridica END,
+                tipo_regimen = CASE WHEN ISNULL(@reg, '') NOT IN ('', 'string') THEN @reg ELSE tipo_regimen END,
+                telefono = CASE WHEN ISNULL(@tel, '') NOT IN ('', 'string') THEN @tel ELSE telefono END,
+                correo_notificaciones = CASE WHEN ISNULL(@cor, '') NOT IN ('', 'string') THEN @cor ELSE correo_notificaciones END,
+                sitio_web = CASE WHEN ISNULL(@sit, '') NOT IN ('', 'string') THEN @sit ELSE sitio_web END
+            WHERE id = 1;
+            
+            -- Si no existe el registro 1, lo insertamos (Upsert manual de seguridad)
+            IF @@ROWCOUNT = 0
+            BEGIN
+                INSERT INTO EMPRESA (nombre_comercial, razon_social, cedula_juridica, tipo_regimen, telefono, correo_notificaciones, sitio_web)
+                VALUES (@nom, @raz, @ced, @reg, @tel, @cor, @sit)
+            END";
+
+        var p = new SqlParameter[] {
+            new SqlParameter("@nom", (object)empresa.NombreComercial ?? DBNull.Value),
+            new SqlParameter("@raz", (object)empresa.RazonSocial ?? DBNull.Value),
+            new SqlParameter("@ced", (object)empresa.CedulaJuridica ?? DBNull.Value),
+            new SqlParameter("@reg", (object)empresa.TipoRegimen ?? DBNull.Value),
+            new SqlParameter("@tel", (object)empresa.Telefono ?? DBNull.Value),
+            new SqlParameter("@cor", (object)empresa.CorreoNotificaciones ?? DBNull.Value),
+            new SqlParameter("@sit", (object)empresa.SitioWeb ?? DBNull.Value)
+        };
+
+        ExecuteNonQuery(sql, p, false);
+    }
+
+    /// <summary>
+    /// Registra la licencia inicial en la base de datos.
     /// </summary>
     public void RegistrarConfiguracionInicial(string nombreEmpresa, string ruc, int maxEquipos, string hid)
     {
@@ -51,38 +99,16 @@ public class ConfiguracionFactory : MasterDao
     }
 
     /// <summary>
-    /// Llama al SP multinivel para validar si el equipo actual tiene acceso o si se debe auto-registrar.
+    /// Valida el hardware ID contra la licencia.
     /// </summary>
     public DataTable ValidarLicenciaMultiEquipo(string hardwareId)
     {
-        var parameters = new SqlParameter[]
-        {
-            new SqlParameter("@hardware_id", hardwareId)
-        };
-
+        var parameters = new SqlParameter[] { new SqlParameter("@hardware_id", hardwareId) };
         return ExecuteQuery("sp_Licencia_AutoValidar_MultiEquipo", parameters);
     }
 
     /// <summary>
-    /// Guarda los datos comerciales de la empresa.
-    /// </summary>
-    public void GuardarEmpresa(EmpresaDTO empresa)
-    {
-        var p = new SqlParameter[] {
-            new SqlParameter("@nombre_comercial", empresa.NombreComercial),
-            new SqlParameter("@razon_social", empresa.NombreComercial),
-            new SqlParameter("@cedula_juridica", empresa.CedulaJuridica),
-            new SqlParameter("@tipo_regimen", empresa.TipoRegimen),
-            new SqlParameter("@telefono", "00000000"),
-            new SqlParameter("@correo_notificaciones", empresa.CorreoNotificaciones),
-            new SqlParameter("@sitio_web", "")
-        };
-
-        ExecuteNonQuery("sp_Empresa_Upsert", p);
-    }
-
-    /// <summary>
-    /// Método de legado para obtener licencia simple.
+    /// Obtiene información de licencia.
     /// </summary>
     public LicenciaDTO? ObtenerLicencia(string hardwareId)
     {
