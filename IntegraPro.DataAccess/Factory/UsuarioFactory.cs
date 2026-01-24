@@ -15,16 +15,14 @@ public class UsuarioFactory : MasterDao
         _mapper = new UsuarioMapper();
     }
 
-    /// <summary>
-    /// Obtiene un usuario por su nombre de usuario. 
-    /// Utilizado por el Login y por el LicenseFilter para validar la sesión activa.
-    /// </summary>
     public UsuarioDTO? GetByUsername(string username)
     {
         var parameters = new SqlParameter[] {
             new SqlParameter("@username", username)
         };
 
+        // NOTA: Para que nombre_rol y permisos_json no lleguen nulos en el login,
+        // el SP 'sp_Usuario_GetByUsername' debe hacer el INNER JOIN con la tabla ROL.
         var table = ExecuteQuery("sp_Usuario_GetByUsername", parameters);
 
         if (table.Rows.Count == 0) return null;
@@ -34,44 +32,90 @@ public class UsuarioFactory : MasterDao
 
     public void Create(UsuarioDTO usuario)
     {
-        // Definimos exactamente los 7 parámetros que espera tu SP
+        // Agregamos el correo_electronico a los parámetros del insert
         var parameters = new SqlParameter[] {
-        new SqlParameter("@id", 0), // El SP lo pide pero no lo usa
-        new SqlParameter("@rol_id", usuario.RolId),
-        new SqlParameter("@sucursal_id", usuario.SucursalId),
-        new SqlParameter("@nombre_completo", usuario.NombreCompleto),
-        new SqlParameter("@username", usuario.Username),
-        new SqlParameter("@password_hash", usuario.PasswordHash),
-        new SqlParameter("@activo", usuario.Activo)
-    };
+            new SqlParameter("@id", 0),
+            new SqlParameter("@rol_id", usuario.RolId),
+            new SqlParameter("@sucursal_id", usuario.SucursalId),
+            new SqlParameter("@nombre_completo", usuario.NombreCompleto),
+            new SqlParameter("@username", usuario.Username),
+            new SqlParameter("@password_hash", usuario.PasswordHash),
+            new SqlParameter("@correo_electronico", usuario.CorreoElectronico ?? (object)DBNull.Value), // NUEVO
+            new SqlParameter("@activo", usuario.Activo)
+        };
 
-        // Ejecutamos el procedimiento
         ExecuteStoredProcedure("sp_Usuario_Insert", parameters);
     }
 
-    /// <summary>
-    /// Registra o limpia el Hardware ID asociado a la sesión activa del usuario.
-    /// </summary>
-    /// <param name="usuarioId">ID del usuario en la base de datos.</param>
-    /// <param name="hardwareId">ID de la PC. Si es null, libera la sesión (Logout).</param>
     public void ActualizarSesionHardware(int usuarioId, string? hardwareId)
     {
         var parameters = new SqlParameter[] {
             new SqlParameter("@id", usuarioId),
-            // Si hardwareId es null, enviamos DBNull.Value a SQL para limpiar el campo
             new SqlParameter("@hardware_id_sesion", (object?)hardwareId ?? DBNull.Value)
         };
 
-        // Ejecuta el procedimiento almacenado que actualiza la tabla USUARIO
         ExecuteNonQuery("sp_Usuario_ActualizarSesion", parameters);
     }
 
     public void RegistrarLogin(int usuarioId)
     {
-        var parameters = new Microsoft.Data.SqlClient.SqlParameter[] {
-        new Microsoft.Data.SqlClient.SqlParameter("@id", usuarioId)
-    };
+        var parameters = new SqlParameter[] {
+            new SqlParameter("@id", usuarioId)
+        };
         ExecuteNonQuery("sp_Usuario_RegistrarLogin", parameters);
     }
 
+    // ==========================================
+    // NUEVOS MÉTODOS PARA GESTIÓN DE ROLES
+    // ==========================================
+
+    public List<UsuarioDTO> GetAll()
+    {
+        // Modificamos u.* por u.correo_electronico explícito para asegurar que el Mapper lo encuentre
+        string sql = @"SELECT u.id, u.rol_id, u.sucursal_id, u.nombre_completo, u.username, 
+                              u.correo_electronico, u.activo, u.ultimo_login, u.hardware_id_sesion,
+                              r.nombre_rol, r.permisos_json 
+                       FROM USUARIO u 
+                       INNER JOIN ROL r ON u.rol_id = r.id";
+
+        var table = ExecuteQuery(sql, [], false);
+        var lista = new List<UsuarioDTO>();
+
+        foreach (DataRow row in table.Rows)
+        {
+            lista.Add(_mapper.MapFromRow(row));
+        }
+
+        return lista;
+    }
+
+    public void ActualizarRol(int usuarioId, int nuevoRolId)
+    {
+        string sql = "UPDATE USUARIO SET rol_id = @rolId WHERE id = @id";
+        var parameters = new SqlParameter[] {
+            new SqlParameter("@id", usuarioId),
+            new SqlParameter("@rolId", nuevoRolId)
+        };
+
+        ExecuteNonQuery(sql, parameters, false);
+    }
+
+    public List<RolDTO> GetRoles()
+    {
+        string sql = "SELECT id, nombre_rol, permisos_json FROM ROL";
+        var table = ExecuteQuery(sql, [], false);
+        var lista = new List<RolDTO>();
+
+        foreach (DataRow row in table.Rows)
+        {
+            lista.Add(new RolDTO
+            {
+                Id = Convert.ToInt32(row["id"]),
+                NombreRol = row["nombre_rol"].ToString() ?? "",
+                PermisosJson = row["permisos_json"].ToString() ?? "{}"
+            });
+        }
+
+        return lista;
+    }
 }

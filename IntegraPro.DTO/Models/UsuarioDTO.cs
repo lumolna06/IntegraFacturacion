@@ -12,9 +12,12 @@ public class UsuarioDTO
     public string CorreoElectronico { get; set; } = string.Empty;
     public bool Activo { get; set; }
     public DateTime? UltimoLogin { get; set; }
-
-    // Nueva propiedad para control de sesión
     public string? HardwareIdSesion { get; set; }
+
+    // --- PROPIEDADES DE APOYO (Solo Lectura para el Front) ---
+    // Estas se llenan mediante un JOIN en el UsuarioFactory
+    public string? NombreRol { get; set; }      // Ej: "Administrador"
+    public string? PermisosJson { get; set; }  // Ej: {"all": true}
 }
 
 // Clase de apoyo para recibir credenciales

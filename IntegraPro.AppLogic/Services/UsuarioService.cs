@@ -115,6 +115,10 @@ public class UsuarioService : IUsuarioService
             if (existente != null)
                 return new ApiResponse<bool>(false, "El nombre de usuario ya está en uso");
 
+            // --- PROFESIONAL: ASIGNACIÓN DE ROL POR DEFECTO ---
+            // Si no se especifica un RolId (0), asignamos el rol con ID 2 (Vendedor/Cajero por ej.)
+            if (usuario.RolId == 0) usuario.RolId = 2;
+
             usuario.PasswordHash = PasswordHasher.HashPassword(usuario.Password);
             _factory.Create(usuario);
 
@@ -124,6 +128,52 @@ public class UsuarioService : IUsuarioService
         {
             Logger.WriteLog("Error", "Registro", ex.Message);
             return new ApiResponse<bool>(false, ex.Message);
+        }
+    }
+
+    // ==========================================
+    // NUEVO: GESTIÓN ADMINISTRATIVA DE USUARIOS
+    // ==========================================
+
+    public ApiResponse<List<UsuarioDTO>> ObtenerTodos()
+    {
+        try
+        {
+            var usuarios = _factory.GetAll();
+            // Limpiamos los hash por seguridad antes de enviarlos a la lista administrativa
+            usuarios.ForEach(u => u.PasswordHash = string.Empty);
+            return new ApiResponse<List<UsuarioDTO>>(true, "Lista cargada", usuarios);
+        }
+        catch (Exception ex)
+        {
+            return new ApiResponse<List<UsuarioDTO>>(false, ex.Message);
+        }
+    }
+
+    public ApiResponse<bool> ActualizarRol(int usuarioId, int nuevoRolId)
+    {
+        try
+        {
+            _factory.ActualizarRol(usuarioId, nuevoRolId);
+            Logger.WriteLog("Administración", "Cambio de Rol", $"Usuario ID {usuarioId} ahora tiene Rol ID {nuevoRolId}");
+            return new ApiResponse<bool>(true, "Rol actualizado correctamente", true);
+        }
+        catch (Exception ex)
+        {
+            return new ApiResponse<bool>(false, $"Error al actualizar rol: {ex.Message}");
+        }
+    }
+
+    public ApiResponse<List<RolDTO>> ListarRolesDisponibles()
+    {
+        try
+        {
+            // Este método debe existir en tu Factory para llenar los combos del Admin
+            return new ApiResponse<List<RolDTO>>(true, "Roles cargados", _factory.GetRoles());
+        }
+        catch (Exception ex)
+        {
+            return new ApiResponse<List<RolDTO>>(false, ex.Message);
         }
     }
 }
