@@ -1,30 +1,39 @@
-﻿using Microsoft.AspNetCore.Mvc;
-using IntegraPro.AppLogic.Interfaces;
+﻿using IntegraPro.AppLogic.Interfaces;
+using IntegraPro.AppLogic.Utils;
 using IntegraPro.DTO.Models;
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Mvc;
 
 namespace IntegraPro.API.Controllers;
 
 [ApiController]
 [Route("api/[controller]")]
-public class ProveedorController(IProveedorService service) : ControllerBase
+[Authorize] // Protegemos el acceso global al controlador
+public class ProveedorController(IProveedorService service) : BaseController // Herencia de BaseController
 {
     private readonly IProveedorService _service = service;
 
-    // Obtener todos los proveedores (Ahora filtrados por permiso)
+    // Obtener todos los proveedores
     [HttpGet]
     public IActionResult Get()
     {
-        var response = _service.ObtenerTodos(ObtenerEjecutor());
+        // UsuarioActual viene del BaseController con todos sus Claims
+        var response = _service.ObtenerTodos(UsuarioActual);
         return response.Result ? Ok(response) : BadRequest(response);
     }
 
-    // Crear un nuevo proveedor (Valida permisos de escritura)
+    // Crear un nuevo proveedor
     [HttpPost]
     public IActionResult Post([FromBody] ProveedorDTO proveedor)
     {
-        var response = _service.Crear(proveedor, ObtenerEjecutor());
-        // Usamos el mensaje dinámico del Service para el Ok
-        return response.Result ? Ok(response) : StatusCode(403, response);
+        var response = _service.Crear(proveedor, UsuarioActual);
+
+        // Si el servicio lanza un UnauthorizedAccessException, el BaseController o 
+        // la lógica del Service lo atrapará. Aquí retornamos 403 si falla el permiso.
+        if (!response.Result && response.Message.Contains("permiso"))
+            return StatusCode(403, response);
+
+        return response.Result ? Ok(response) : BadRequest(response);
     }
 
     // Actualizar un proveedor existente
@@ -32,9 +41,9 @@ public class ProveedorController(IProveedorService service) : ControllerBase
     public IActionResult Put([FromBody] ProveedorDTO proveedor)
     {
         if (proveedor.Id <= 0)
-            return BadRequest(new { mensaje = "ID de proveedor no válido para actualizar." });
+            return BadRequest(new ApiResponse<bool>(false, "ID de proveedor no válido para actualizar."));
 
-        var response = _service.Actualizar(proveedor, ObtenerEjecutor());
+        var response = _service.Actualizar(proveedor, UsuarioActual);
         return response.Result ? Ok(response) : BadRequest(response);
     }
 
@@ -43,27 +52,9 @@ public class ProveedorController(IProveedorService service) : ControllerBase
     public IActionResult Delete(int id)
     {
         if (id <= 0)
-            return BadRequest(new { mensaje = "ID de proveedor no válido." });
+            return BadRequest(new ApiResponse<bool>(false, "ID de proveedor no válido."));
 
-        var response = _service.Eliminar(id, ObtenerEjecutor());
+        var response = _service.Eliminar(id, UsuarioActual);
         return response.Result ? Ok(response) : BadRequest(response);
-    }
-
-    /// <summary>
-    /// Extrae la identidad del usuario para validar permisos en el Factory.
-    /// </summary>
-    private UsuarioDTO ObtenerEjecutor()
-    {
-        if (User.Identity?.IsAuthenticated == true)
-        {
-            return new UsuarioDTO
-            {
-                Id = int.Parse(User.FindFirst("id")?.Value ?? "0"),
-                RolId = int.Parse(User.FindFirst("rolId")?.Value ?? "0"),
-                SucursalId = int.Parse(User.FindFirst("sucursalId")?.Value ?? "0")
-            };
-        }
-        // Mock de desarrollo: Rol 1 suele ser Admin con todos los permisos
-        return new UsuarioDTO { Id = 1, RolId = 1, SucursalId = 1 };
     }
 }

@@ -1,6 +1,7 @@
-﻿using IntegraPro.AppLogic.Services;
+﻿using IntegraPro.AppLogic.Interfaces; // Usar la interfaz para Inyección de Dependencias
 using IntegraPro.DTO.Models;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Authorization;
 using QuestPDF.Fluent;
 using QuestPDF.Infrastructure;
 using IntegraPro.API.Reports;
@@ -11,34 +12,30 @@ namespace IntegraPro.API.Controllers;
 
 [Route("api/[controller]")]
 [ApiController]
-public class VentaController(VentaService service) : ControllerBase
+[Authorize] // Asegura que nadie sin Token JWT pueda facturar o ver reportes
+public class VentaController(IVentaService service) : ControllerBase
 {
-    private readonly VentaService _service = service;
+    private readonly IVentaService _service = service;
 
     [HttpPost]
     public IActionResult Post([FromBody] FacturaDTO factura)
     {
-        try
-        {
-            // Simulación de validación con Hacienda
-            factura.EstadoHacienda = "ACEPTADO";
-            factura.EsOffline = false;
+        // Forzamos datos de Hacienda (Simulación)
+        factura.EstadoHacienda = "ACEPTADO";
+        factura.EsOffline = false;
 
-            // Se pasa el ejecutor al método ProcesarVenta
-            string numFac = _service.ProcesarVenta(factura, ObtenerEjecutor());
+        var response = _service.ProcesarVenta(factura, ObtenerEjecutor());
 
-            return Ok(new
-            {
-                success = true,
-                factura = numFac,
-                estado = factura.EstadoHacienda,
-                message = "Venta procesada y aceptada por Hacienda."
-            });
-        }
-        catch (Exception ex)
+        if (!response.Result)
+            return BadRequest(response);
+
+        return Ok(new
         {
-            return BadRequest(new { success = false, message = ex.Message });
-        }
+            success = true,
+            factura = response.Data, // El consecutivo generado
+            estado = factura.EstadoHacienda,
+            message = response.Message
+        });
     }
 
     [HttpGet("reportes")]
@@ -49,98 +46,96 @@ public class VentaController(VentaService service) : ControllerBase
         [FromQuery] string buscar = "",
         [FromQuery] string? condicion = "")
     {
-        try
+        DateTime fechaInicio = desde ?? DateTime.Now.AddMonths(-1);
+        DateTime fechaFin = hasta ?? DateTime.Now;
+
+        var response = _service.ObtenerReporteVentas(
+            fechaInicio,
+            fechaFin,
+            clienteId,
+            buscar ?? "",
+            condicion ?? "",
+            ObtenerEjecutor()
+        );
+
+        if (!response.Result)
+            return BadRequest(response);
+
+        DataTable dt = response.Data;
+        decimal sumaTotales = 0;
+        var filas = new List<Dictionary<string, object>>();
+
+        foreach (DataRow row in dt.Rows)
         {
-            // Aseguramos que las fechas no sean nulas para el Service
-            DateTime fechaInicio = desde ?? DateTime.Now.AddMonths(-1);
-            DateTime fechaFin = hasta ?? DateTime.Now;
-
-            // LLAMADA CORREGIDA: Ahora coincide con los 6 parámetros del Service
-            DataTable dt = _service.ObtenerReporteVentas(
-                fechaInicio,
-                fechaFin,
-                clienteId,
-                buscar ?? "",
-                condicion ?? "",
-                ObtenerEjecutor()
-            );
-
-            decimal sumaTotales = 0;
-            var filas = new List<Dictionary<string, object>>();
-
-            foreach (DataRow row in dt.Rows)
+            var diccionario = new Dictionary<string, object>();
+            foreach (DataColumn col in dt.Columns)
             {
-                var diccionario = new Dictionary<string, object>();
-                foreach (DataColumn col in dt.Columns)
-                {
-                    diccionario[col.ColumnName] = row[col] == DBNull.Value ? null : row[col];
-                }
-
-                filas.Add(diccionario);
-
-                // Validamos que la columna exista antes de sumar
-                if (dt.Columns.Contains("total_comprobante") && row["total_comprobante"] != DBNull.Value)
-                    sumaTotales += Convert.ToDecimal(row["total_comprobante"]);
+                diccionario[col.ColumnName] = row[col] == DBNull.Value ? null : row[col];
             }
+            filas.Add(diccionario);
 
-            return Ok(new
-            {
-                success = true,
-                conteo = filas.Count,
-                totalSuma = sumaTotales,
-                data = filas
-            });
+            if (dt.Columns.Contains("total_comprobante") && row["total_comprobante"] != DBNull.Value)
+                sumaTotales += Convert.ToDecimal(row["total_comprobante"]);
         }
-        catch (Exception ex)
+
+        return Ok(new
         {
-            return BadRequest(new { success = false, message = ex.Message });
-        }
+            success = true,
+            conteo = filas.Count,
+            totalSuma = sumaTotales,
+            data = filas
+        });
     }
 
     [HttpGet("imprimir/{id}")]
     public IActionResult Imprimir(int id)
     {
+        var ejecutor = ObtenerEjecutor();
+
+        // 1. Obtener la factura
+        var responseFactura = _service.ObtenerFacturaParaImpresion(id, ejecutor);
+        if (!responseFactura.Result || responseFactura.Data == null)
+            return NotFound(responseFactura);
+
+        // 2. Obtener datos de la empresa (Ahora requiere ejecutor)
+        var responseEmpresa = _service.ObtenerEmpresa(ejecutor);
+        if (!responseEmpresa.Result || responseEmpresa.Data == null)
+            return BadRequest(responseEmpresa);
+
         try
         {
-            // Se pasa el ejecutor para validar si tiene permiso de ver esta factura
-            var factura = _service.ObtenerFacturaParaImpresion(id, ObtenerEjecutor());
-
-            if (factura == null)
-                return NotFound(new { success = false, message = "La factura no existe o no tiene permisos para verla." });
-
-            var empresa = _service.ObtenerEmpresa();
-
             QuestPDF.Settings.License = LicenseType.Community;
 
-            var documento = new FacturaReport(factura, empresa);
+            var documento = new FacturaReport(responseFactura.Data, responseEmpresa.Data);
             byte[] pdfBytes = documento.GeneratePdf();
 
-            return File(pdfBytes, "application/pdf", $"Factura_{factura.Consecutivo}.pdf");
+            return File(pdfBytes, "application/pdf", $"Factura_{responseFactura.Data.Consecutivo}.pdf");
         }
         catch (Exception ex)
         {
-            return BadRequest(new { success = false, message = "Error al generar PDF: " + ex.Message });
+            return BadRequest(new { success = false, message = "Error al renderizar PDF: " + ex.Message });
         }
     }
 
     /// <summary>
-    /// Obtiene el usuario autenticado desde el Token JWT.
+    /// Extrae de forma segura la identidad del usuario desde el Token JWS.
     /// </summary>
     private UsuarioDTO ObtenerEjecutor()
     {
-        // Se recomienda usar nombres de claims estándar o los definidos en tu Login
         if (User.Identity?.IsAuthenticated == true)
         {
             return new UsuarioDTO
             {
-                Id = int.Parse(User.FindFirst("id")?.Value ?? User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "0"),
-                RolId = int.Parse(User.FindFirst("rolId")?.Value ?? "0"),
-                SucursalId = int.Parse(User.FindFirst("sucursalId")?.Value ?? "0"),
-                Username = User.Identity.Name ?? ""
+                Id = int.Parse(User.FindFirst("Id")?.Value ?? "0"),
+                RolId = int.Parse(User.FindFirst("RolId")?.Value ?? "0"),
+                SucursalId = int.Parse(User.FindFirst("SucursalId")?.Value ?? "0"),
+                Username = User.Identity.Name ?? "System",
+                // Cargamos permisos desde el token si existen
+                PermisosJson = User.FindFirst("permisos")?.Value
             };
         }
 
-        // Usuario por defecto solo para desarrollo
-        return new UsuarioDTO { Id = 1, RolId = 1, SucursalId = 1, Username = "DevUser" };
+        // En producción, esto debería lanzar un error de No Autorizado
+        throw new UnauthorizedAccessException("Debe estar autenticado para realizar esta operación.");
     }
 }

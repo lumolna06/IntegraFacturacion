@@ -7,11 +7,18 @@ namespace IntegraPro.DataAccess.Factory;
 
 public class CategoriaFactory(string connectionString) : MasterDao(connectionString)
 {
-    public List<CategoriaDTO> GetAll()
+    public List<CategoriaDTO> GetAll(UsuarioDTO ejecutor)
     {
-        // Usamos false porque es una consulta de texto plano, no un SP
+        // SEGURIDAD: Validar que el usuario tiene permiso para ver este módulo
+        ejecutor.ValidarAcceso("inventario"); // O "categorias", según tu JSON
+
+        // Las categorías suelen ser globales, por lo que no aplicamos GetFiltroSucursal 
+        // a menos que tu tabla CATEGORIA tenga una columna sucursal_id.
         var dt = ExecuteQuery("SELECT * FROM CATEGORIA", null, false);
         var lista = new List<CategoriaDTO>();
+
+        if (dt == null) return lista;
+
         foreach (DataRow row in dt.Rows)
         {
             lista.Add(new CategoriaDTO
@@ -26,16 +33,15 @@ public class CategoriaFactory(string connectionString) : MasterDao(connectionStr
 
     public bool Create(CategoriaDTO dto, UsuarioDTO ejecutor)
     {
-        // Validación de Rol: Solo lectura no puede crear categorías
-        if (ejecutor.TienePermiso("solo_lectura"))
-            throw new UnauthorizedAccessException("Acceso denegado: Su rol es de solo lectura y no puede crear categorías.");
+        // SEGURIDAD: Reemplazamos el 'if' manual por los helpers del DTO
+        ejecutor.ValidarAcceso("inventario");
+        ejecutor.ValidarEscritura();
 
         var parameters = new[] {
             new SqlParameter("@nombre", dto.Nombre),
-            new SqlParameter("@descripcion", dto.Descripcion ?? (object)DBNull.Value)
+            new SqlParameter("@descripcion", (object?)dto.Descripcion ?? DBNull.Value)
         };
 
-        // Ejecutamos como consulta de texto (false)
         ExecuteNonQuery("INSERT INTO CATEGORIA (nombre, descripcion) VALUES (@nombre, @descripcion)", parameters, false);
         return true;
     }

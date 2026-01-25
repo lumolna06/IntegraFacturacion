@@ -13,7 +13,10 @@ public class CajaService(CajaFactory factory) : ICajaService
     {
         try
         {
-            // Ahora le pasamos el 'ejecutor' al Factory para que valide el rol
+            // --- SEGURIDAD: Validación preventiva ---
+            ejecutor.ValidarAcceso("caja");
+            ejecutor.ValidarEscritura();
+
             int id = _factory.AbrirCaja(apertura, ejecutor);
             return new ApiResponse<int>(true, "Caja abierta con éxito", id);
         }
@@ -31,7 +34,10 @@ public class CajaService(CajaFactory factory) : ICajaService
     {
         try
         {
-            // Pasamos el 'ejecutor' para asegurar que tenga permisos de cierre
+            // --- SEGURIDAD: Validación preventiva ---
+            ejecutor.ValidarAcceso("caja");
+            ejecutor.ValidarEscritura();
+
             _factory.CerrarCaja(cierre, ejecutor);
             return new ApiResponse<bool>(true, "Caja cerrada correctamente", true);
         }
@@ -49,9 +55,15 @@ public class CajaService(CajaFactory factory) : ICajaService
     {
         try
         {
-            // El Factory usará el 'ejecutor' para filtrar por sucursal automáticamente
+            // --- SEGURIDAD: Validación preventiva ---
+            ejecutor.ValidarAcceso("caja");
+
             var historial = _factory.ObtenerHistorialCierres(ejecutor);
             return new ApiResponse<List<object>>(true, "Historial recuperado", historial);
+        }
+        catch (UnauthorizedAccessException ex)
+        {
+            return new ApiResponse<List<object>>(false, ex.Message);
         }
         catch (Exception ex)
         {

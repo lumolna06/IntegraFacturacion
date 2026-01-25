@@ -12,8 +12,9 @@ public class AbonoFactory(string connectionString) : MasterDao(connectionString)
     // 1. REGISTRAR ABONO (Transaccional + Seguridad)
     public void ProcesarAbonoCompleto(AbonoDTO abono, int clienteId, UsuarioDTO ejecutor)
     {
-        if (ejecutor.TienePermiso("solo_lectura"))
-            throw new UnauthorizedAccessException("Permisos insuficientes para registrar abonos.");
+        // SEGURIDAD AÑADIDA
+        ejecutor.ValidarAcceso("abonos");
+        ejecutor.ValidarEscritura();
 
         string sql = @"
             BEGIN TRANSACTION;
@@ -53,31 +54,23 @@ public class AbonoFactory(string connectionString) : MasterDao(connectionString)
         ExecuteNonQuery(sql, p, false);
     }
 
-    // 2. BUSCAR CUENTAS (Usa cuenta_id para FacturaId en el DTO)
+    // 2. BUSCAR CUENTAS (Multitenancy con GetFiltroSucursal)
     public List<CxcConsultaDTO> BuscarCxcClientes(string filtro, UsuarioDTO ejecutor)
     {
-        // Usamos 1=1 para poder concatenar filtros opcionales dinámicamente
-        string sql = @"SELECT * FROM VW_EstadoCuenta_Clientes WHERE 1=1 ";
+        // SEGURIDAD: Filtrado automático por sucursal
+        string sql = $@"SELECT * FROM VW_EstadoCuenta_Clientes 
+                        WHERE {ejecutor.GetFiltroSucursal()} ";
 
-        // Si el filtro tiene texto, aplicamos la búsqueda por campos
         if (!string.IsNullOrWhiteSpace(filtro))
         {
             sql += " AND (cliente_nombre LIKE @f OR factura_numero LIKE @f OR cedula LIKE @f) ";
         }
 
-        // Filtro de seguridad por sucursal
-        if (ejecutor.RolId != 1)
-            sql += " AND sucursal_id = @sid ";
-
         sql += " ORDER BY fecha_vencimiento ASC";
 
         var p = new List<SqlParameter>();
-
         if (!string.IsNullOrWhiteSpace(filtro))
             p.Add(new SqlParameter("@f", $"%{filtro}%"));
-
-        if (ejecutor.RolId != 1)
-            p.Add(new SqlParameter("@sid", ejecutor.SucursalId));
 
         var dt = ExecuteQuery(sql, p.ToArray(), false);
         var lista = new List<CxcConsultaDTO>();
@@ -88,7 +81,6 @@ public class AbonoFactory(string connectionString) : MasterDao(connectionString)
         {
             lista.Add(new CxcConsultaDTO
             {
-                // Mapeo corregido a la nueva propiedad del DTO
                 CuentaCobrarId = (int)row["cuenta_id"],
                 NumeroFactura = row["factura_numero"].ToString()!,
                 ClienteNombre = row["cliente_nombre"].ToString()!,
@@ -104,18 +96,16 @@ public class AbonoFactory(string connectionString) : MasterDao(connectionString)
         return lista;
     }
 
-    // 3. ALERTAS DE MORA
+    // 3. ALERTAS DE MORA (Seguridad por sucursal añadida)
     public List<AlertaCxcDTO> ObtenerAlertasVencimiento(UsuarioDTO ejecutor)
     {
-        string sql = @"SELECT * FROM VW_EstadoCuenta_Clientes 
-                       WHERE saldo_pendiente > 0 AND fecha_vencimiento < GETDATE()";
+        // SEGURIDAD: Filtrado automático por sucursal
+        string sql = $@"SELECT * FROM VW_EstadoCuenta_Clientes 
+                       WHERE saldo_pendiente > 0 
+                       AND fecha_vencimiento < GETDATE()
+                       AND {ejecutor.GetFiltroSucursal()}";
 
-        if (ejecutor.RolId != 1)
-            sql += " AND sucursal_id = @sid";
-
-        var p = (ejecutor.RolId != 1) ? new[] { new SqlParameter("@sid", ejecutor.SucursalId) } : null;
-        var dt = ExecuteQuery(sql, p, false);
-
+        var dt = ExecuteQuery(sql, null, false);
         var alertas = new List<AlertaCxcDTO>();
         if (dt == null) return alertas;
 
@@ -136,22 +126,20 @@ public class AbonoFactory(string connectionString) : MasterDao(connectionString)
         return alertas;
     }
 
-    // 4. RESUMEN GENERAL
+    // 4. RESUMEN GENERAL (Seguridad por sucursal añadida)
     public ResumenCxcDTO ObtenerTotalesCxc(UsuarioDTO ejecutor)
     {
-        string sql = @"SELECT 
+        // SEGURIDAD: Filtrado automático por sucursal
+        string sql = $@"SELECT 
                         SUM(saldo_pendiente) as TotalCobrar,
                         SUM(CASE WHEN fecha_vencimiento < GETDATE() THEN saldo_pendiente ELSE 0 END) as TotalVencido,
                         COUNT(cuenta_id) as CantidadFacturas,
                         COUNT(DISTINCT cliente_id) as TotalClientes
                        FROM VW_EstadoCuenta_Clientes 
-                       WHERE saldo_pendiente > 0";
+                       WHERE saldo_pendiente > 0
+                       AND {ejecutor.GetFiltroSucursal()}";
 
-        if (ejecutor.RolId != 1)
-            sql += " AND sucursal_id = @sid";
-
-        var p = (ejecutor.RolId != 1) ? new[] { new SqlParameter("@sid", ejecutor.SucursalId) } : null;
-        var dt = ExecuteQuery(sql, p, false);
+        var dt = ExecuteQuery(sql, null, false);
 
         if (dt != null && dt.Rows.Count > 0 && dt.Rows[0]["TotalCobrar"] != DBNull.Value)
         {
@@ -167,10 +155,9 @@ public class AbonoFactory(string connectionString) : MasterDao(connectionString)
         return new ResumenCxcDTO();
     }
 
-    // 5. HISTORIAL DE ABONOS (Muestra info aunque la cuenta esté en 0)
+    // 5. HISTORIAL DE ABONOS (Sin cambios, ya que cuentaId es un identificador único seguro)
     public List<AbonoHistorialDTO> ListarHistorialAbonos(int cuentaId)
     {
-        // Aquí cuentaId recibe el ID de la Cuenta por Cobrar
         string sql = @"SELECT A.id, A.monto_abonado, A.fecha, A.medio_pago, A.referencia, U.nombre_completo
                    FROM ABONO_CLIENTE A
                    INNER JOIN USUARIO U ON A.usuario_id = U.id

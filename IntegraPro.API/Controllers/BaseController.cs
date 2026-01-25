@@ -1,7 +1,8 @@
 ﻿using Microsoft.AspNetCore.Mvc;
 using IntegraPro.DTO.Models;
 using System.Security.Claims;
-using System.Diagnostics; // Necesario para Debug.WriteLine
+using System.Diagnostics;
+using System.Linq;
 
 namespace IntegraPro.API.Controllers;
 
@@ -17,38 +18,51 @@ public class BaseController : ControllerBase
             // Verificamos si hay un token válido y el usuario está autenticado
             if (User.Identity?.IsAuthenticated == true)
             {
-                // Extraemos los valores de los claims
-                // Usamos tanto el tipo estándar como el nombre literal por seguridad
-                var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? User.FindFirst("nameid")?.Value ?? "0";
-                var rolIdClaim = User.FindFirst("RolId")?.Value ?? "0";
-                var sucursalIdClaim = User.FindFirst("SucursalId")?.Value ?? "0";
-                var permisosRaw = User.FindFirst("Permisos")?.Value;
+                // Obtenemos la lista de claims una sola vez para mejorar el rendimiento
+                var claims = User.Claims.ToList();
+
+                // Buscamos los valores de forma insensible a mayúsculas (Case-Insensitive)
+                // Esto evita que el sistema falle si el token trae "id" pero buscamos "Id"
+                var userIdStr = claims.FirstOrDefault(c => c.Type.Equals("id", StringComparison.OrdinalIgnoreCase))?.Value
+                                ?? User.FindFirst(ClaimTypes.NameIdentifier)?.Value
+                                ?? "0";
+
+                var rolIdStr = claims.FirstOrDefault(c => c.Type.Equals("rolId", StringComparison.OrdinalIgnoreCase))?.Value
+                               ?? "0";
+
+                var sucursalIdStr = claims.FirstOrDefault(c => c.Type.Equals("sucursalId", StringComparison.OrdinalIgnoreCase))?.Value
+                                    ?? "0";
+
+                var permisosRaw = claims.FirstOrDefault(c => c.Type.Equals("permisos", StringComparison.OrdinalIgnoreCase))?.Value;
 
                 // --- BLOQUE DE DEPURACIÓN EN CONSOLA ---
-                // Revisa la ventana "Salida" (Output) de Visual Studio mientras ejecutas
-                Debug.WriteLine("========================================");
-                Debug.WriteLine($"[AUTH DEBUG] Usuario: {User.Identity.Name}");
-                Debug.WriteLine($"[AUTH DEBUG] ID Extraído: {userIdClaim}");
-                Debug.WriteLine($"[AUTH DEBUG] Permisos RAW: {permisosRaw}");
-                Debug.WriteLine("========================================");
+                Debug.WriteLine("================ AUTH DEBUG START ================");
+                Debug.WriteLine($"[USUARIO]: {User.Identity.Name}");
+                Debug.WriteLine($"[ID]: {userIdStr}");
+                Debug.WriteLine($"[ROL]: {rolIdStr}");
+                Debug.WriteLine($"[SUCURSAL]: {sucursalIdStr}");
+                Debug.WriteLine($"[PERMISOS RAW]: {permisosRaw}");
 
-                var usuario = new UsuarioDTO
+                // Tip: Imprimimos todos los claims si permisosRaw llega nulo para ver qué nombres traen
+                if (string.IsNullOrEmpty(permisosRaw))
                 {
-                    Id = int.Parse(userIdClaim),
-                    RolId = int.Parse(rolIdClaim),
-                    SucursalId = int.Parse(sucursalIdClaim),
-                    Username = User.Identity.Name ?? "Sin nombre",
+                    Debug.WriteLine("[WARN] No se encontró el claim 'permisos'. Claims disponibles:");
+                    foreach (var c in claims) Debug.WriteLine($" -> {c.Type}: {c.Value}");
+                }
+                Debug.WriteLine("================= AUTH DEBUG END =================");
 
-                    // Al asignar PermisosJson, el setter del DTO (con la limpieza que pusimos)
-                    // convertirá el string escapado en el diccionario real de permisos.
+                return new UsuarioDTO
+                {
+                    Id = int.Parse(userIdStr),
+                    RolId = int.Parse(rolIdStr),
+                    SucursalId = int.Parse(sucursalIdStr),
+                    Username = User.Identity.Name ?? "Sin nombre",
+                    // Al asignar PermisosJson, el setter en UsuarioDTO hará el resto
                     PermisosJson = permisosRaw ?? "{}"
                 };
-
-                return usuario;
             }
 
-            // Fallback: Si no hay token o no está autenticado, devolvemos un usuario anónimo sin permisos
-            // Esto evita errores de referencia nula en los controladores.
+            // Fallback para usuarios no autenticados
             return new UsuarioDTO
             {
                 Id = 0,

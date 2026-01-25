@@ -10,17 +10,24 @@ public class ConfiguracionService(ConfiguracionFactory factory) : IConfiguracion
     private readonly ConfiguracionFactory _factory = factory;
 
     /// <summary>
-    /// Recupera los datos de la empresa para facturación y reportes.
+    /// Recupera los datos de la empresa. Ahora requiere el ejecutor para validar acceso.
     /// </summary>
-    public ApiResponse<EmpresaDTO> ObtenerDatosEmpresa()
+    public ApiResponse<EmpresaDTO> ObtenerDatosEmpresa(UsuarioDTO ejecutor)
     {
         try
         {
-            var datos = _factory.ObtenerEmpresa();
+            // --- SEGURIDAD: Validación preventiva ---
+            ejecutor.ValidarAcceso("config");
+
+            var datos = _factory.ObtenerEmpresa(ejecutor);
             if (datos == null)
                 return new ApiResponse<EmpresaDTO>(false, "No se encontraron datos de configuración de la empresa.");
 
             return new ApiResponse<EmpresaDTO>(true, "Datos recuperados exitosamente.", datos);
+        }
+        catch (UnauthorizedAccessException ex)
+        {
+            return new ApiResponse<EmpresaDTO>(false, ex.Message);
         }
         catch (Exception ex)
         {
@@ -29,12 +36,16 @@ public class ConfiguracionService(ConfiguracionFactory factory) : IConfiguracion
     }
 
     /// <summary>
-    /// Actualiza la información comercial. Valida permisos mediante el ejecutor.
+    /// Actualiza la información comercial.
     /// </summary>
     public ApiResponse<bool> ActualizarEmpresa(EmpresaDTO empresa, UsuarioDTO ejecutor)
     {
         try
         {
+            // --- SEGURIDAD: Validación preventiva ---
+            ejecutor.ValidarAcceso("config");
+            ejecutor.ValidarEscritura();
+
             _factory.GuardarEmpresa(empresa, ejecutor);
             return new ApiResponse<bool>(true, "Empresa actualizada correctamente.", true);
         }
@@ -49,12 +60,16 @@ public class ConfiguracionService(ConfiguracionFactory factory) : IConfiguracion
     }
 
     /// <summary>
-    /// Realiza el registro inicial en la base de datos (vínculo RUC-Hardware).
+    /// Realiza el registro inicial en la base de datos.
     /// </summary>
     public ApiResponse<bool> RegistrarLicenciaInicial(string nombre, string ruc, int equipos, string hid, UsuarioDTO ejecutor)
     {
         try
         {
+            // --- SEGURIDAD: Validación preventiva ---
+            ejecutor.ValidarAcceso("config");
+            ejecutor.ValidarEscritura();
+
             _factory.RegistrarConfiguracionInicial(nombre, ruc, equipos, hid, ejecutor);
             return new ApiResponse<bool>(true, "Licencia registrada y sistema activado.", true);
         }
@@ -69,7 +84,7 @@ public class ConfiguracionService(ConfiguracionFactory factory) : IConfiguracion
     }
 
     /// <summary>
-    /// Consulta el estado de la licencia para un equipo específico.
+    /// Consulta el estado de la licencia para un equipo específico (No requiere ejecutor por ser pre-auth).
     /// </summary>
     public ApiResponse<LicenciaDTO> ConsultarLicencia(string hardwareId)
     {

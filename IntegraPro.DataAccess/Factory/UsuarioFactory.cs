@@ -12,15 +12,14 @@ public class UsuarioFactory : MasterDao
 {
     private readonly UsuarioMapper _mapper;
 
-    // Ajustado para pasar la cadena de conexión al MasterDao base
     public UsuarioFactory(string connectionString) : base(connectionString)
     {
         _mapper = new UsuarioMapper();
     }
 
     /// <summary>
-    /// Obtiene un usuario y sus permisos. Método exento de validación de ejecutor 
-    /// porque es el punto de entrada para autenticación.
+    /// Obtiene un usuario y sus permisos. Punto de entrada para Auth.
+    /// Exento de validación de ejecutor.
     /// </summary>
     public UsuarioDTO? GetByUsername(string username)
     {
@@ -28,7 +27,7 @@ public class UsuarioFactory : MasterDao
             new SqlParameter("@username", username)
         };
 
-        // sp_Usuario_GetByUsername debe retornar: id, rol_id, sucursal_id, nombre_completo, 
+        // sp_Usuario_GetByUsername retorna: id, rol_id, sucursal_id, nombre_completo, 
         // username, password_hash, correo_electronico, activo, nombre_rol, permisos_json
         var table = ExecuteQuery("sp_Usuario_GetByUsername", parameters);
 
@@ -42,30 +41,30 @@ public class UsuarioFactory : MasterDao
     /// </summary>
     public void Create(UsuarioDTO nuevoUsuario, UsuarioDTO ejecutor)
     {
+        // SEGURIDAD: Validación directa usando el DTO
         if (!ejecutor.TienePermiso("usuarios"))
             throw new UnauthorizedAccessException("No tiene permisos para gestionar usuarios.");
 
         if (ejecutor.TienePermiso("solo_lectura"))
             throw new UnauthorizedAccessException("Su cuenta está en modo solo lectura.");
 
-        // Si el admin está limitado a su sucursal, forzamos que el nuevo usuario sea de esa sucursal
+        // Lógica de Jurisdicción: Si el admin está limitado a su sucursal
         if (ejecutor.TienePermiso("sucursal_limit"))
         {
             nuevoUsuario.SucursalId = ejecutor.SucursalId;
 
-            // No permitimos que cree roles de mayor jerarquía (asumiendo 1 = Admin Global)
+            // Bloqueo de jerarquía: No puede crear Admins Globales (Rol 1)
             if (nuevoUsuario.RolId == 1)
                 throw new UnauthorizedAccessException("No tiene autoridad para asignar el rol de Administrador Global.");
         }
 
         var parameters = new SqlParameter[] {
-            new SqlParameter("@id", 0),
             new SqlParameter("@rol_id", nuevoUsuario.RolId),
             new SqlParameter("@sucursal_id", nuevoUsuario.SucursalId),
             new SqlParameter("@nombre_completo", nuevoUsuario.NombreCompleto),
             new SqlParameter("@username", nuevoUsuario.Username),
             new SqlParameter("@password_hash", nuevoUsuario.PasswordHash),
-            new SqlParameter("@correo_electronico", nuevoUsuario.CorreoElectronico ?? (object)DBNull.Value),
+            new SqlParameter("@correo_electronico", (object?)nuevoUsuario.CorreoElectronico ?? DBNull.Value),
             new SqlParameter("@activo", nuevoUsuario.Activo)
         };
 
@@ -73,11 +72,15 @@ public class UsuarioFactory : MasterDao
     }
 
     /// <summary>
-    /// Lista usuarios. Filtra por sucursal automáticamente según el perfil del ejecutor.
+    /// Lista usuarios filtrando por sucursal automáticamente según el perfil del ejecutor.
     /// </summary>
     public List<UsuarioDTO> GetAll(UsuarioDTO ejecutor)
     {
-        int? sucursalFiltro = ejecutor.TienePermiso("sucursal_limit") ? ejecutor.SucursalId : null;
+        // SEGURIDAD: Solo usuarios autorizados listan usuarios
+        if (!ejecutor.TienePermiso("usuarios"))
+            return new List<UsuarioDTO>();
+
+        bool limitarSucursal = ejecutor.TienePermiso("sucursal_limit");
 
         string sql = @"SELECT u.*, r.nombre_rol, r.permisos_json 
                        FROM USUARIO u 
@@ -86,10 +89,10 @@ public class UsuarioFactory : MasterDao
 
         List<SqlParameter> parameters = new List<SqlParameter>();
 
-        if (sucursalFiltro.HasValue)
+        if (limitarSucursal)
         {
             sql += " AND u.sucursal_id = @sucursalId";
-            parameters.Add(new SqlParameter("@sucursalId", sucursalFiltro.Value));
+            parameters.Add(new SqlParameter("@sucursalId", ejecutor.SucursalId));
         }
 
         var table = ExecuteQuery(sql, parameters.ToArray(), false);
@@ -107,15 +110,16 @@ public class UsuarioFactory : MasterDao
     }
 
     /// <summary>
-    /// Actualiza el rol verificando que el usuario pertenezca a la sucursal del ejecutor si hay restricciones.
+    /// Actualiza el rol verificando jurisdicción de sucursal.
     /// </summary>
     public void ActualizarRol(int usuarioId, int nuevoRolId, UsuarioDTO ejecutor)
     {
         if (!ejecutor.TienePermiso("usuarios") || ejecutor.TienePermiso("solo_lectura"))
             throw new UnauthorizedAccessException("Permisos insuficientes para modificar roles.");
 
+        // Bloqueo de escalada de privilegios
         if (ejecutor.TienePermiso("sucursal_limit") && nuevoRolId == 1)
-            throw new UnauthorizedAccessException("Jurisdicción insuficiente para asignar administración global.");
+            throw new UnauthorizedAccessException("No puede asignar administración global desde una cuenta limitada por sucursal.");
 
         string sql = "UPDATE USUARIO SET rol_id = @rolId WHERE id = @id";
         var parameters = new List<SqlParameter> {
@@ -123,6 +127,7 @@ public class UsuarioFactory : MasterDao
             new SqlParameter("@rolId", nuevoRolId)
         };
 
+        // Forzamos que solo pueda editar usuarios de SU sucursal si tiene el límite
         if (ejecutor.TienePermiso("sucursal_limit"))
         {
             sql += " AND sucursal_id = @sid";
@@ -132,7 +137,7 @@ public class UsuarioFactory : MasterDao
         int filas = ExecuteNonQuery(sql, parameters.ToArray(), false);
 
         if (filas == 0)
-            throw new Exception("Operación fallida: El usuario no existe o se encuentra fuera de su sucursal.");
+            throw new Exception("No se pudo actualizar: El usuario no existe o no pertenece a su sucursal.");
     }
 
     public List<RolDTO> GetRoles(UsuarioDTO ejecutor)
@@ -141,7 +146,7 @@ public class UsuarioFactory : MasterDao
 
         string sql = "SELECT id, nombre_rol, permisos_json FROM ROL";
 
-        // El admin de sucursal no debe ver/asignar el rol de Admin Global (ID 1)
+        // Un admin de sucursal no debe ver ni asignar el rol de Admin Global (ID 1)
         if (ejecutor.TienePermiso("sucursal_limit"))
             sql += " WHERE id > 1";
 

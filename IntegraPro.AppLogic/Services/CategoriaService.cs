@@ -9,13 +9,20 @@ public class CategoriaService(CategoriaFactory factory) : ICategoriaService
 {
     private readonly CategoriaFactory _factory = factory;
 
-    public ApiResponse<List<CategoriaDTO>> ObtenerTodas()
+    // ACTUALIZADO: Ahora recibe UsuarioDTO para validar acceso preventivo
+    public ApiResponse<List<CategoriaDTO>> ObtenerTodas(UsuarioDTO ejecutor)
     {
         try
         {
-            var lista = _factory.GetAll();
-            // Result = true, Message = texto, Data = lista
+            // --- SEGURIDAD: Validación preventiva ---
+            ejecutor.ValidarAcceso("inventario");
+
+            var lista = _factory.GetAll(ejecutor);
             return new ApiResponse<List<CategoriaDTO>>(true, "Lista de categorías", lista);
+        }
+        catch (UnauthorizedAccessException ex)
+        {
+            return new ApiResponse<List<CategoriaDTO>>(false, ex.Message);
         }
         catch (Exception ex)
         {
@@ -27,17 +34,21 @@ public class CategoriaService(CategoriaFactory factory) : ICategoriaService
     {
         try
         {
+            // --- SEGURIDAD: Validación preventiva ---
+            ejecutor.ValidarAcceso("inventario");
+            ejecutor.ValidarEscritura();
+
+            // Lógica original: Validaciones de negocio
             if (string.IsNullOrWhiteSpace(categoria.Nombre))
                 return new ApiResponse<bool>(false, "El nombre de la categoría es obligatorio.");
 
-            // Pasamos el ejecutor al factory para la validación de roles
             bool ok = _factory.Create(categoria, ejecutor);
 
             return new ApiResponse<bool>(ok, ok ? "Categoría guardada con éxito" : "No se pudo guardar la categoría", ok);
         }
         catch (UnauthorizedAccessException ex)
         {
-            // Capturamos el error de permisos del Factory
+            // Captura los errores de permisos (tanto del Service como del Factory)
             return new ApiResponse<bool>(false, ex.Message, false);
         }
         catch (Exception ex)

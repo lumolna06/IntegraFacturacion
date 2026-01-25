@@ -42,6 +42,7 @@ public class UsuarioService : IUsuarioService
                 return new ApiResponse<UsuarioDTO>(false, "Credenciales incorrectas");
             }
 
+            // Validación de Hardware ID (Evitar múltiples terminales con la misma cuenta)
             string hidActual = _licenciaService.GetHardwareId();
             if (!string.IsNullOrEmpty(usuario.HardwareIdSesion) && usuario.HardwareIdSesion != hidActual)
             {
@@ -52,12 +53,11 @@ public class UsuarioService : IUsuarioService
             _factory.ActualizarSesionHardware(usuario.Id, hidActual);
             _factory.RegistrarLogin(usuario.Id);
 
-            // === GENERACIÓN DE TOKEN SINCRONIZADA ===
+            // Generar el Token con la identidad real
             usuario.Token = GenerarJwtToken(usuario);
-
             usuario.UltimoLogin = DateTime.Now;
             usuario.HardwareIdSesion = hidActual;
-            usuario.PasswordHash = string.Empty;
+            usuario.PasswordHash = string.Empty; // Seguridad: Nunca devolver el hash al cliente
 
             Logger.WriteLog("Seguridad", "Login Exitoso", $"Usuario {username} ha ingresado en equipo {hidActual}.");
             return new ApiResponse<UsuarioDTO>(true, "Acceso concedido", usuario);
@@ -71,23 +71,21 @@ public class UsuarioService : IUsuarioService
 
     private string GenerarJwtToken(UsuarioDTO usuario)
     {
-        // 1. LEEMOS LA CLAVE DIRECTO DE APPSETTINGS (Evitamos claves temporales fijas)
         var secretKey = _config["Jwt:Key"] ?? "EstaEsUnaClaveSecretaMuyLargaDeAlMenos32Caracteres2026!";
         var key = Encoding.ASCII.GetBytes(secretKey);
 
+        // Los Claims deben coincidir EXACTAMENTE con lo que busca tu BaseController
         var tokenDescriptor = new SecurityTokenDescriptor
         {
             Subject = new ClaimsIdentity(new[]
             {
-                new Claim(ClaimTypes.NameIdentifier, usuario.Id.ToString()),
+                new Claim("id", usuario.Id.ToString()),
                 new Claim(ClaimTypes.Name, usuario.Username),
-                new Claim("RolId", usuario.RolId.ToString()),
-                new Claim("SucursalId", usuario.SucursalId.ToString()),
-                // Importante: Mandar el JSON de permisos para que el API lo reconstruya
-                new Claim("Permisos", usuario.PermisosJson ?? "{}")
+                new Claim("rolId", usuario.RolId.ToString()),
+                new Claim("sucursalId", usuario.SucursalId.ToString()),
+                new Claim("permisos", usuario.PermisosJson ?? "{}")
             }),
             Expires = DateTime.UtcNow.AddHours(12),
-            // Aseguramos que el Issuer y Audience coincidan si están en el Program.cs
             Issuer = _config["Jwt:Issuer"],
             Audience = _config["Jwt:Audience"],
             SigningCredentials = new SigningCredentials(
@@ -100,12 +98,13 @@ public class UsuarioService : IUsuarioService
         return tokenHandler.WriteToken(token);
     }
 
-    // ... Resto de los métodos del servicio permanecen igual
     public ApiResponse<bool> Registrar(UsuarioDTO usuario, UsuarioDTO ejecutor)
     {
         try
         {
             Guard.AgainstNull(usuario, nameof(usuario));
+
+            // Usamos las validaciones directas del DTO
             if (!ejecutor.TienePermiso("usuarios"))
                 return new ApiResponse<bool>(false, "No tiene permisos para registrar usuarios.");
 
@@ -116,7 +115,6 @@ public class UsuarioService : IUsuarioService
             if (existente != null)
                 return new ApiResponse<bool>(false, "El nombre de usuario ya está en uso");
 
-            if (usuario.RolId == 0) usuario.RolId = 2;
             usuario.PasswordHash = PasswordHasher.HashPassword(usuario.Password);
             _factory.Create(usuario, ejecutor);
 
@@ -165,6 +163,9 @@ public class UsuarioService : IUsuarioService
     {
         try
         {
+            if (!ejecutor.TienePermiso("usuarios"))
+                return new ApiResponse<List<UsuarioDTO>>(false, "No tiene permisos para ver esta lista.");
+
             var usuarios = _factory.GetAll(ejecutor);
             usuarios.ForEach(u => u.PasswordHash = string.Empty);
             return new ApiResponse<List<UsuarioDTO>>(true, "Lista cargada", usuarios);

@@ -7,21 +7,37 @@ namespace IntegraPro.AppLogic.Services;
 
 public class ProveedorService(ProveedorFactory factory) : IProveedorService
 {
+    private readonly ProveedorFactory _factory = factory;
+
     public ApiResponse<List<ProveedorDTO>> ObtenerTodos(UsuarioDTO ejecutor)
     {
         try
         {
-            var lista = factory.ObtenerTodos(ejecutor);
-            return new ApiResponse<List<ProveedorDTO>>(true, "Proveedores cargados", lista);
+            // SEGURIDAD: Validación preventiva en la capa de servicio
+            ejecutor.ValidarAcceso("proveedores");
+
+            var lista = _factory.ObtenerTodos(ejecutor);
+            return new ApiResponse<List<ProveedorDTO>>(true, "Proveedores cargados con éxito", lista);
         }
-        catch (Exception ex) { return new ApiResponse<List<ProveedorDTO>>(false, ex.Message); }
+        catch (UnauthorizedAccessException ex)
+        {
+            return new ApiResponse<List<ProveedorDTO>>(false, ex.Message);
+        }
+        catch (Exception ex)
+        {
+            return new ApiResponse<List<ProveedorDTO>>(false, "Error al listar proveedores: " + ex.Message);
+        }
     }
 
     public ApiResponse<bool> Crear(ProveedorDTO proveedor, UsuarioDTO ejecutor)
     {
         try
         {
-            factory.Crear(proveedor, ejecutor);
+            // SEGURIDAD: Doble validación (Acceso al módulo y permiso de escritura)
+            ejecutor.ValidarAcceso("proveedores");
+            ejecutor.ValidarEscritura();
+
+            _factory.Crear(proveedor, ejecutor);
             return new ApiResponse<bool>(true, "Proveedor creado con éxito", true);
         }
         catch (UnauthorizedAccessException ex) { return new ApiResponse<bool>(false, ex.Message, false); }
@@ -32,19 +48,27 @@ public class ProveedorService(ProveedorFactory factory) : IProveedorService
     {
         try
         {
-            factory.Actualizar(proveedor, ejecutor);
-            return new ApiResponse<bool>(true, "Proveedor actualizado", true);
+            ejecutor.ValidarAcceso("proveedores");
+            ejecutor.ValidarEscritura();
+
+            _factory.Actualizar(proveedor, ejecutor);
+            return new ApiResponse<bool>(true, "Proveedor actualizado con éxito", true);
         }
-        catch (Exception ex) { return new ApiResponse<bool>(false, ex.Message, false); }
+        catch (UnauthorizedAccessException ex) { return new ApiResponse<bool>(false, ex.Message, false); }
+        catch (Exception ex) { return new ApiResponse<bool>(false, "Error al actualizar: " + ex.Message, false); }
     }
 
     public ApiResponse<bool> Eliminar(int id, UsuarioDTO ejecutor)
     {
         try
         {
-            factory.Eliminar(id, ejecutor);
-            return new ApiResponse<bool>(true, "Proveedor desactivado", true);
+            ejecutor.ValidarAcceso("proveedores");
+            ejecutor.ValidarEscritura();
+
+            _factory.Eliminar(id, ejecutor);
+            return new ApiResponse<bool>(true, "Proveedor desactivado correctamente", true);
         }
-        catch (Exception ex) { return new ApiResponse<bool>(false, ex.Message, false); }
+        catch (UnauthorizedAccessException ex) { return new ApiResponse<bool>(false, ex.Message, false); }
+        catch (Exception ex) { return new ApiResponse<bool>(false, "Error al eliminar: " + ex.Message, false); }
     }
 }

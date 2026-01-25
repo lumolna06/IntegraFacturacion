@@ -9,17 +9,17 @@ public class CajaFactory(string connectionString) : MasterDao(connectionString)
 {
     public int AbrirCaja(CajaAperturaDTO apertura, UsuarioDTO ejecutor)
     {
-        // 1. VALIDACIÓN: Evitar que cuentas de solo lectura operen la caja
-        if (ejecutor.TienePermiso("solo_lectura"))
-            throw new UnauthorizedAccessException("Su cuenta es de solo lectura. No puede abrir caja.");
+        // 1. SEGURIDAD: Usar los nuevos helpers del DTO
+        ejecutor.ValidarAcceso("caja");
+        ejecutor.ValidarEscritura();
 
         string sql = @"INSERT INTO CAJA_CIERRE (sucursal_id, usuario_id, fecha_apertura, monto_inicial, estado) 
                        VALUES (@sid, @uid, GETDATE(), @monto, 'Abierta');
                        SELECT CAST(SCOPE_IDENTITY() as int);";
 
         var p = new[] {
-            new SqlParameter("@sid", ejecutor.SucursalId), // Usamos la sucursal del ejecutor por seguridad
-            new SqlParameter("@uid", ejecutor.Id),         // El ejecutor es el responsable
+            new SqlParameter("@sid", ejecutor.SucursalId),
+            new SqlParameter("@uid", ejecutor.Id),
             new SqlParameter("@monto", apertura.MontoInicial)
         };
 
@@ -29,9 +29,9 @@ public class CajaFactory(string connectionString) : MasterDao(connectionString)
 
     public void CerrarCaja(CajaCierreDTO cierre, UsuarioDTO ejecutor)
     {
-        // 2. VALIDACIÓN: Seguridad de rol
-        if (ejecutor.TienePermiso("solo_lectura"))
-            throw new UnauthorizedAccessException("No tiene permisos para realizar cierres de caja.");
+        // 2. SEGURIDAD: Validar permisos de escritura antes de procesar
+        ejecutor.ValidarAcceso("caja");
+        ejecutor.ValidarEscritura();
 
         string sqlInfo = "SELECT sucursal_id, fecha_apertura FROM CAJA_CIERRE WHERE id = @id AND estado = 'Abierta'";
         var dtInfo = ExecuteQuery(sqlInfo, new[] { new SqlParameter("@id", cierre.CajaId) }, false);
@@ -41,6 +41,7 @@ public class CajaFactory(string connectionString) : MasterDao(connectionString)
         var sid = dtInfo.Rows[0]["sucursal_id"];
         var fechaApertura = dtInfo.Rows[0]["fecha_apertura"];
 
+        // Lógica de cálculo original (Intacta)
         string sqlCierre = @"
             DECLARE @ventas decimal(18,2) = (SELECT ISNULL(SUM(total_comprobante),0) FROM FACTURA_ENCABEZADO 
                                             WHERE sucursal_id = @sid AND fecha >= @fecha AND medio_pago = 'Efectivo');
@@ -71,23 +72,20 @@ public class CajaFactory(string connectionString) : MasterDao(connectionString)
 
     public List<object> ObtenerHistorialCierres(UsuarioDTO ejecutor)
     {
-        // 3. FILTRADO: Si no es admin, solo ve los cierres de su sucursal
-        string sql = "SELECT * FROM VW_REPORTE_CIERRES_CAJA";
+        // 3. SEGURIDAD: Filtrado automático por sucursal usando el DTO
+        string sql = $@"SELECT * FROM VW_REPORTE_CIERRES_CAJA 
+                        WHERE {ejecutor.GetFiltroSucursal()} 
+                        ORDER BY fecha_cierre DESC";
 
-        // Si el rol no es administrador (supongamos Rol 1), filtramos por sucursal
-        if (ejecutor.RolId != 1)
-        {
-            sql += " WHERE sucursal_id = @sid";
-        }
-
-        sql += " ORDER BY fecha_cierre DESC";
-
+        // Al usar GetFiltroSucursal(), el DTO decide si inyecta "sucursal_id = @sid" o "1=1"
         var p = (ejecutor.RolId != 1)
                 ? new[] { new SqlParameter("@sid", ejecutor.SucursalId) }
                 : null;
 
         var dt = ExecuteQuery(sql, p, false);
         var lista = new List<object>();
+
+        if (dt == null) return lista;
 
         foreach (DataRow row in dt.Rows)
         {

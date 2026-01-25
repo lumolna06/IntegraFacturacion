@@ -74,7 +74,8 @@ builder.Services.AddScoped(sp => new AbonoFactory(connectionString));
 builder.Services.AddScoped(sp => new ProformaFactory(connectionString));
 
 // --- Capa de Lógica (Services) ---
-builder.Services.AddScoped<LicenciaService>();
+// --- Capa de Lógica (Services) ---
+builder.Services.AddScoped<IVentaService, VentaService>(); // Agregado para resolver el error 500
 builder.Services.AddScoped<IConfiguracionService, ConfiguracionService>();
 builder.Services.AddScoped<IUsuarioService, UsuarioService>();
 builder.Services.AddScoped<IProductoService, ProductoService>();
@@ -86,6 +87,7 @@ builder.Services.AddScoped<ICompraService, CompraService>();
 builder.Services.AddScoped<IProformaService, ProformaService>();
 builder.Services.AddScoped<IAbonoService, AbonoService>();
 builder.Services.AddScoped<ICajaService, CajaService>();
+builder.Services.AddScoped<LicenciaService>();
 builder.Services.AddScoped(sp => new XmlParserService(connectionString));
 
 // ==========================================

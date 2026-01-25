@@ -31,17 +31,13 @@ public class UsuarioDTO
             {
                 try
                 {
-                    // --- CORRECCIÓN PARA JWT ---
-                    // Al recibir el JSON del Token, suele venir escapado como "{\"all\":true}"
-                    // Trim('"') quita comillas externas y Replace limpia las barras invertidas internas
+                    // Limpieza de JSON escapado proveniente de JWT
                     string cleanJson = value.Trim('"').Replace("\\\"", "\"");
-
                     var options = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
                     Permisos = JsonSerializer.Deserialize<Dictionary<string, bool>>(cleanJson, options) ?? new();
                 }
                 catch
                 {
-                    // Si el JSON es inválido, inicializamos el diccionario vacío para evitar errores
                     Permisos = new Dictionary<string, bool>();
                 }
             }
@@ -52,8 +48,11 @@ public class UsuarioDTO
         }
     }
 
-    // Diccionario para lógica interna de Factories (se llena automáticamente vía PermisosJson)
     public Dictionary<string, bool> Permisos { get; set; } = new();
+
+    // ==========================================
+    // MÉTODOS DE LÓGICA DE SEGURIDAD (NUEVOS)
+    // ==========================================
 
     /// <summary>
     /// Evalúa si el usuario cuenta con un permiso específico.
@@ -62,17 +61,47 @@ public class UsuarioDTO
     {
         if (Permisos == null) return false;
 
-        // 1. RESTRICCIONES CRÍTICAS (Solo lectura tiene prioridad de bloqueo)
+        // 1. RESTRICCIONES CRÍTICAS (Solo lectura)
         if (clave == "solo_lectura")
-        {
             return Permisos.TryGetValue("solo_lectura", out bool restringido) && restringido;
-        }
 
-        // 2. ACCESO TOTAL (Permiso "all" otorga todo excepto si hay restricción de solo lectura)
+        // 2. ACCESO TOTAL (all)
         if (Permisos.TryGetValue("all", out bool all) && all) return true;
 
         // 3. PERMISO ESPECÍFICO
         return Permisos.TryGetValue(clave, out bool p) && p;
+    }
+
+    /// <summary>
+    /// Lanza una excepción si el usuario tiene el perfil de "solo_lectura".
+    /// Ideal para proteger métodos Insert, Update y Delete.
+    /// </summary>
+    public void ValidarEscritura()
+    {
+        if (TienePermiso("solo_lectura"))
+            throw new UnauthorizedAccessException("Operación denegada: Su usuario solo tiene permisos de consulta (Auditoría).");
+    }
+
+    /// <summary>
+    /// Valida si el usuario tiene acceso a un módulo. Si no, lanza excepción.
+    /// </summary>
+    public void ValidarAcceso(string clavePermiso)
+    {
+        if (!TienePermiso(clavePermiso))
+            throw new UnauthorizedAccessException($"Acceso denegado: No cuenta con el permiso '{clavePermiso}' para realizar esta acción.");
+    }
+
+    /// <summary>
+    /// Genera dinámicamente el fragmento SQL para filtrar por sucursal.
+    /// </summary>
+    /// <param name="aliasTabla">Opcional: alias de la tabla en el SQL (ej: 'p')</param>
+    public string GetFiltroSucursal(string aliasTabla = "")
+    {
+        // Si no tiene la limitación, devolvemos una condición siempre verdadera.
+        if (!TienePermiso("sucursal_limit")) return " (1=1) ";
+
+        string prefijo = string.IsNullOrEmpty(aliasTabla) ? "" : $"{aliasTabla}.";
+        return $" {prefijo}sucursal_id = {this.SucursalId} ";
     }
 }
 

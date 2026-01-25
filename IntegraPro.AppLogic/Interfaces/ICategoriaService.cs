@@ -1,12 +1,14 @@
 ﻿using IntegraPro.AppLogic.Utils;
 using IntegraPro.DTO.Models;
+using System.Collections.Generic;
 
 namespace IntegraPro.AppLogic.Interfaces;
 
 public interface ICategoriaService
 {
-    ApiResponse<List<CategoriaDTO>> ObtenerTodas();
+    // ACTUALIZADO: Se añade el ejecutor para validar permisos de acceso al módulo
+    ApiResponse<List<CategoriaDTO>> ObtenerTodas(UsuarioDTO ejecutor);
 
-    // Actualizado: Se añade el parámetro ejecutor para validación de roles
+    // Mantenemos el ejecutor para validación de roles y escritura
     ApiResponse<bool> Crear(CategoriaDTO categoria, UsuarioDTO ejecutor);
 }

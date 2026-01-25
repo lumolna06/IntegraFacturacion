@@ -13,9 +13,15 @@ public class ClienteService(ClienteFactory cliFactory) : IClienteService
     {
         try
         {
-            // Tu Factory no pide parámetros aquí, así que lo llamamos limpio
-            var clientes = _cliFactory.ObtenerTodos();
+            // --- SEGURIDAD: Validación preventiva ---
+            ejecutor.ValidarAcceso("clientes");
+
+            var clientes = _cliFactory.ObtenerTodos(ejecutor);
             return new ApiResponse<List<ClienteDTO>>(true, "Clientes recuperados con éxito", clientes);
+        }
+        catch (UnauthorizedAccessException ex)
+        {
+            return new ApiResponse<List<ClienteDTO>>(false, ex.Message);
         }
         catch (Exception ex)
         {
@@ -23,19 +29,28 @@ public class ClienteService(ClienteFactory cliFactory) : IClienteService
         }
     }
 
-    public ApiResponse<ClienteDTO> BuscarPorIdentificacion(string identificacion)
+    // ACTUALIZADO: Ahora recibe 'ejecutor' para cumplir con la interfaz y la seguridad
+    public ApiResponse<ClienteDTO> BuscarPorIdentificacion(string identificacion, UsuarioDTO ejecutor)
     {
         try
         {
+            // --- SEGURIDAD: Solo usuarios autorizados pueden buscar por ID ---
+            ejecutor.ValidarAcceso("clientes");
+
             if (string.IsNullOrWhiteSpace(identificacion))
                 return new ApiResponse<ClienteDTO>(false, "La identificación no puede estar vacía.");
 
-            var cliente = _cliFactory.ObtenerPorIdentificacion(identificacion);
+            // Sincronizado con Factory: Se pasa ejecutor por si la Factory aplica filtros de sucursal
+            var cliente = _cliFactory.ObtenerPorIdentificacion(identificacion, ejecutor);
 
             if (cliente == null)
                 return new ApiResponse<ClienteDTO>(false, "Cliente no encontrado.");
 
             return new ApiResponse<ClienteDTO>(true, "Cliente localizado", cliente);
+        }
+        catch (UnauthorizedAccessException ex)
+        {
+            return new ApiResponse<ClienteDTO>(false, ex.Message);
         }
         catch (Exception ex)
         {
@@ -43,15 +58,16 @@ public class ClienteService(ClienteFactory cliFactory) : IClienteService
         }
     }
 
-    // Adaptado: Se llama 'Crear' para la Interfaz pero usa '_cliFactory.Insertar'
     public ApiResponse<int> Crear(ClienteDTO cliente, UsuarioDTO ejecutor)
     {
         try
         {
+            ejecutor.ValidarAcceso("clientes");
+            ejecutor.ValidarEscritura();
+
             if (string.IsNullOrWhiteSpace(cliente.Identificacion))
                 return new ApiResponse<int>(false, "La identificación es obligatoria.");
 
-            // Usamos tu método Insertar que devuelve el int
             int nuevoId = _cliFactory.Insertar(cliente, ejecutor);
 
             return new ApiResponse<int>(true, "Cliente registrado correctamente", nuevoId);
@@ -64,6 +80,9 @@ public class ClienteService(ClienteFactory cliFactory) : IClienteService
     {
         try
         {
+            ejecutor.ValidarAcceso("clientes");
+            ejecutor.ValidarEscritura();
+
             if (cliente.Id <= 0)
                 return new ApiResponse<bool>(false, "ID de cliente no válido.", false);
 

@@ -9,21 +9,17 @@ namespace IntegraPro.DataAccess.Factory;
 public class ConfiguracionFactory(string connectionString) : MasterDao(connectionString)
 {
     /// <summary>
-    /// Obtiene todos los datos comerciales de la empresa e indicadores de configuración. 
+    /// Obtiene los datos comerciales. Ahora requiere validación de acceso al módulo config.
     /// </summary>
-    public EmpresaDTO? ObtenerEmpresa()
+    public EmpresaDTO? ObtenerEmpresa(UsuarioDTO ejecutor)
     {
+        // SEGURIDAD: Validar que el usuario tiene permiso para ver la configuración
+        ejecutor.ValidarAcceso("config");
+
         string sql = @"SELECT TOP 1 
-                        id, 
-                        nombre_comercial, 
-                        razon_social, 
-                        cedula_juridica, 
-                        tipo_regimen, 
-                        telefono, 
-                        correo_notificaciones, 
-                        sitio_web, 
-                        logo,
-                        permitir_stock_negativo
+                        id, nombre_comercial, razon_social, cedula_juridica, 
+                        tipo_regimen, telefono, correo_notificaciones, sitio_web, 
+                        logo, permitir_stock_negativo
                        FROM EMPRESA";
 
         DataTable dt = ExecuteQuery(sql, null, false);
@@ -47,15 +43,14 @@ public class ConfiguracionFactory(string connectionString) : MasterDao(connectio
     }
 
     /// <summary>
-    /// Guarda o actualiza con lógica anti-basura. Solo permitido para roles con permiso 'config'.
+    /// Guarda o actualiza con lógica blindada.
     /// </summary>
     public void GuardarEmpresa(EmpresaDTO empresa, UsuarioDTO ejecutor)
     {
-        // 1. VALIDACIÓN DE SEGURIDAD
-        if (!ejecutor.TienePermiso("config") || ejecutor.TienePermiso("solo_lectura"))
-            throw new UnauthorizedAccessException("No tiene permisos para modificar la configuración global del sistema.");
+        // SEGURIDAD: Reemplazamos el 'if' manual por los helpers estandarizados
+        ejecutor.ValidarAcceso("config");
+        ejecutor.ValidarEscritura();
 
-        // 2. Lógica de protección: Solo actualiza si el valor no es nulo/vacío para textos, y actualiza el bit de stock.
         string sql = @"
             UPDATE EMPRESA SET 
                 nombre_comercial = CASE WHEN ISNULL(@nom, '') NOT IN ('', 'string') THEN @nom ELSE nombre_comercial END,
@@ -89,12 +84,12 @@ public class ConfiguracionFactory(string connectionString) : MasterDao(connectio
     }
 
     /// <summary>
-    /// Registra la licencia inicial. Requiere permisos de configuración.
+    /// Registra la licencia. Mantenemos el permiso 'config'.
     /// </summary>
     public void RegistrarConfiguracionInicial(string nombreEmpresa, string ruc, int maxEquipos, string hid, UsuarioDTO ejecutor)
     {
-        if (!ejecutor.TienePermiso("config"))
-            throw new UnauthorizedAccessException("Acción denegada para el registro de licencia.");
+        ejecutor.ValidarAcceso("config");
+        ejecutor.ValidarEscritura();
 
         var parameters = new SqlParameter[] {
             new SqlParameter("@nombre_empresa", nombreEmpresa),
@@ -106,18 +101,15 @@ public class ConfiguracionFactory(string connectionString) : MasterDao(connectio
         ExecuteNonQuery("sp_Configuracion_ActivarSistema", parameters);
     }
 
-    /// <summary>
-    /// Valida el hardware ID contra la licencia. No requiere 'ejecutor' ya que ocurre antes del login.
-    /// </summary>
+    // Los métodos ValidarLicenciaMultiEquipo y ObtenerLicencia se quedan igual
+    // ya que se usan en procesos de arranque o validación de equipo físico (pre-auth).
+
     public DataTable ValidarLicenciaMultiEquipo(string hardwareId)
     {
         var parameters = new SqlParameter[] { new SqlParameter("@hardware_id", hardwareId) };
         return ExecuteQuery("sp_Licencia_AutoValidar_MultiEquipo", parameters);
     }
 
-    /// <summary>
-    /// Obtiene información de licencia.
-    /// </summary>
     public LicenciaDTO? ObtenerLicencia(string hardwareId)
     {
         var p = new SqlParameter[] { new SqlParameter("@hardware_id", hardwareId) };

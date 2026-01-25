@@ -1,75 +1,29 @@
 ﻿using Microsoft.AspNetCore.Mvc;
 using IntegraPro.AppLogic.Interfaces;
 using IntegraPro.DTO.Models;
-using System.Security.Claims;
-using System.Text.Json;
+using Microsoft.AspNetCore.Authorization;
 
 namespace IntegraPro.API.Controllers;
 
 [ApiController]
 [Route("api/[controller]")]
-public class CompraController(ICompraService compraService) : ControllerBase
+[Authorize] // Protege todo el módulo de compras
+public class CompraController(ICompraService compraService) : BaseController // Hereda de tu BaseController real
 {
     private readonly ICompraService _service = compraService;
-
-    private UsuarioDTO UsuarioActual
-    {
-        get
-        {
-            // 1. Intentamos obtener los datos del Token
-            var identity = User.Identity as ClaimsIdentity;
-
-            var usuario = new UsuarioDTO
-            {
-                Id = int.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier) ?? "0"),
-                RolId = int.Parse(User.FindFirstValue("RolId") ?? "0"),
-                SucursalId = int.Parse(User.FindFirstValue("SucursalId") ?? "0"),
-                Username = User.Identity?.Name ?? "Invitado"
-            };
-
-            // 2. Intentamos cargar los permisos desde el JSON del Token
-            var permisosJson = User.FindFirstValue("Permisos");
-            if (!string.IsNullOrEmpty(permisosJson))
-            {
-                usuario.PermisosJson = permisosJson;
-                try
-                {
-                    usuario.Permisos = JsonSerializer.Deserialize<Dictionary<string, bool>>(permisosJson)
-                                       ?? new Dictionary<string, bool>();
-                }
-                catch
-                {
-                    usuario.Permisos = new Dictionary<string, bool>();
-                }
-            }
-
-            // === LÍNEA DE EMERGENCIA ===
-            // Si el token dice que eres Rol 1 (Admin), forzamos el permiso "all" 
-            // Esto descarta problemas de lectura del JSON.
-            if (usuario.RolId == 1)
-            {
-                usuario.Permisos["all"] = true;
-            }
-
-            return usuario;
-        }
-    }
 
     [HttpPost]
     public IActionResult Post(CompraDTO compra)
     {
         try
         {
-            // Verificación visual en la consola de depuración
-            Console.WriteLine($"Procesando compra - Usuario: {UsuarioActual.Username}, Rol: {UsuarioActual.RolId}, Admin: {UsuarioActual.TienePermiso("all")}");
-
+            // Usamos UsuarioActual del BaseController (ya trae claims y permisos)
             _service.RegistrarNuevaCompra(compra, UsuarioActual);
             return Ok(new { mensaje = "Compra procesada exitosamente." });
         }
         catch (UnauthorizedAccessException ex)
         {
-            // Capturamos específicamente el error de permisos para dar más detalle
-            return StatusCode(403, new { error = ex.Message, detalle = "El Factory rechazó los permisos del usuario." });
+            return StatusCode(403, new { error = ex.Message, detalle = "Acceso denegado al módulo de compras." });
         }
         catch (Exception ex)
         {
@@ -124,6 +78,7 @@ public class CompraController(ICompraService compraService) : ControllerBase
     {
         try
         {
+            // Nota: Aquí podrías pasar UsuarioActual si el service requiere filtrar por sucursal
             var historial = _service.ListarHistorialDePagos(compraId);
             return Ok(historial);
         }

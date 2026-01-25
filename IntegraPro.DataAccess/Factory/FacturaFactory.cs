@@ -1,64 +1,76 @@
 ﻿using IntegraPro.DataAccess.Dao;
 using IntegraPro.DTO.Models;
 using Microsoft.Data.SqlClient;
-using System;
-using System.Collections.Generic;
 using System.Data;
 
 namespace IntegraPro.DataAccess.Factory;
 
 public class FacturaFactory(string connectionString) : MasterDao(connectionString)
 {
-    // ... Métodos CrearEncabezado e InsertarDetalle se mantienen igual ...
-
-    /// <summary>
-    /// Lista facturas aplicando filtros de búsqueda, cliente, condición y sucursal.
-    /// </summary>
-    public DataTable Listar(DateTime inicio, DateTime fin, int? clienteId, string buscar, string condicion, UsuarioDTO ejecutor)
+    // 1. CREAR ENCABEZADO (Blindado con UsuarioDTO)
+    public int CrearEncabezado(FacturaDTO factura, string consecutivo, string clave, UsuarioDTO ejecutor)
     {
-        // 1. Base del SQL con JOIN para traer nombre de cliente
-        string sql = @"SELECT F.*, C.nombre as ClienteNombre 
-                       FROM FACTURA_ENCABEZADO F
-                       LEFT JOIN CLIENTE C ON F.cliente_id = C.id
-                       WHERE F.fecha BETWEEN @inicio AND @fin";
+        // SEGURIDAD: Validar acceso al módulo de ventas/facturación
+        ejecutor.ValidarAcceso("ventas");
+        ejecutor.ValidarEscritura();
 
-        var pars = new List<SqlParameter> {
-            new SqlParameter("@inicio", inicio),
-            new SqlParameter("@fin", fin)
+        // IMPORTANTE: Forzamos que la sucursal y el usuario sean los del token, no los que vengan en el JSON
+        // Esto evita fraudes donde un usuario intenta facturar a nombre de otra sucursal.
+        int sucursalReal = ejecutor.SucursalId;
+        int usuarioReal = ejecutor.Id;
+
+        string sql = @"INSERT INTO FACTURA_ENCABEZADO 
+            (cliente_id, sucursal_id, usuario_id, consecutivo, clave_numerica, fecha, condicion_venta, medio_pago, total_neto, total_descuento, total_impuesto, total_comprobante, estado_hacienda)
+            VALUES (@cli, @suc, @usu, @cons, @clav, GETDATE(), @cond, @medi, @neto, @tdesc, @imp, @total, 'Pendiente');
+            SELECT CAST(SCOPE_IDENTITY() as int) AS NuevoID;";
+
+        var p = new[] {
+            new SqlParameter("@cli", SqlDbType.Int) { Value = factura.ClienteId },
+            new SqlParameter("@suc", SqlDbType.Int) { Value = sucursalReal },
+            new SqlParameter("@usu", SqlDbType.Int) { Value = usuarioReal },
+            new SqlParameter("@cons", SqlDbType.NVarChar) { Value = consecutivo },
+            new SqlParameter("@clav", SqlDbType.NVarChar) { Value = clave },
+            new SqlParameter("@cond", SqlDbType.NVarChar) { Value = factura.CondicionVenta },
+            new SqlParameter("@medi", SqlDbType.NVarChar) { Value = factura.MedioPago },
+            new SqlParameter("@neto", SqlDbType.Decimal) { Value = factura.TotalNeto },
+            new SqlParameter("@tdesc", SqlDbType.Decimal) { Value = factura.TotalDescuento },
+            new SqlParameter("@imp", SqlDbType.Decimal) { Value = factura.TotalImpuesto },
+            new SqlParameter("@total", SqlDbType.Decimal) { Value = factura.TotalComprobante }
         };
 
-        // 2. Filtro de Seguridad: sucursal_limit
-        if (ejecutor.TienePermiso("sucursal_limit"))
+        var dt = ExecuteQuery(sql, p, false);
+
+        if (dt != null && dt.Rows.Count > 0)
         {
-            sql += " AND F.sucursal_id = @sid";
-            pars.Add(new SqlParameter("@sid", ejecutor.SucursalId));
+            return Convert.ToInt32(dt.Rows[0][0]);
         }
 
-        // 3. Filtro Opcional: Cliente específico
-        if (clienteId.HasValue && clienteId > 0)
-        {
-            sql += " AND F.cliente_id = @cid";
-            pars.Add(new SqlParameter("@cid", clienteId.Value));
-        }
-
-        // 4. Filtro Opcional: Condición (Contado/Crédito)
-        if (!string.IsNullOrEmpty(condicion))
-        {
-            sql += " AND F.condicion_venta = @cond";
-            pars.Add(new SqlParameter("@cond", condicion));
-        }
-
-        // 5. Filtro Opcional: Búsqueda abierta (Consecutivo, Clave o Nombre Cliente)
-        if (!string.IsNullOrEmpty(buscar))
-        {
-            sql += " AND (F.consecutivo LIKE @bus OR F.clave_numerica LIKE @bus OR C.nombre LIKE @bus)";
-            pars.Add(new SqlParameter("@bus", "%" + buscar + "%"));
-        }
-
-        sql += " ORDER BY F.id DESC";
-
-        return ExecuteQuery(sql, pars.ToArray(), false);
+        throw new Exception("Error crítico: No se pudo generar el registro de la factura.");
     }
 
-    // ... Resto de métodos (ObtenerPorId, ActualizarEstadoHacienda) se mantienen igual ...
+    // 2. INSERTAR DETALLE (Mantenemos tu lógica de cálculo decimal)
+    public void InsertarDetalle(int facturaId, FacturaDetalleDTO d)
+    {
+        string sql = @"INSERT INTO FACTURA_DETALLE 
+            (factura_id, producto_id, cantidad, precio_unitario, porcentaje_descuento, monto_descuento, monto_impuesto, total_linea)
+            VALUES (@fid, @pid, @cant, @prec, @pdes, @mdes, @mimp, @total)";
+
+        // Tu lógica de cálculo se mantiene intacta
+        decimal montoDesc = (d.PrecioUnitario * d.Cantidad) * (d.PorcentajeDescuento / 100);
+        decimal subtotal = (d.PrecioUnitario * d.Cantidad) - montoDesc;
+        decimal impuesto = subtotal * 0.13m; // IVA estándar
+
+        var p = new[] {
+            new SqlParameter("@fid", SqlDbType.Int) { Value = facturaId },
+            new SqlParameter("@pid", SqlDbType.Int) { Value = d.ProductoId },
+            new SqlParameter("@cant", SqlDbType.Decimal) { Value = d.Cantidad },
+            new SqlParameter("@prec", SqlDbType.Decimal) { Value = d.PrecioUnitario },
+            new SqlParameter("@pdes", SqlDbType.Decimal) { Value = d.PorcentajeDescuento },
+            new SqlParameter("@mdes", SqlDbType.Decimal) { Value = montoDesc },
+            new SqlParameter("@mimp", SqlDbType.Decimal) { Value = impuesto },
+            new SqlParameter("@total", SqlDbType.Decimal) { Value = subtotal + impuesto }
+        };
+
+        ExecuteNonQuery(sql, p, false);
+    }
 }

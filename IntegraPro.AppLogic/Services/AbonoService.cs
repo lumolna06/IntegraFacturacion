@@ -9,23 +9,25 @@ public class AbonoService(AbonoFactory factory) : IAbonoService
 {
     private readonly AbonoFactory _factory = factory;
 
-    // 1. PROCESAR ABONO (Sincronizado con ProcesarAbonoCompleto)
+    // 1. PROCESAR ABONO
     public ApiResponse<bool> ProcesarAbono(AbonoDTO abono, int clienteId, UsuarioDTO ejecutor)
     {
         try
         {
+            // --- SEGURIDAD: Validar antes de tocar la DB ---
+            ejecutor.ValidarAcceso("abonos");
+            ejecutor.ValidarEscritura();
+
             // Validaciones básicas de negocio
             if (abono.MontoAbonado <= 0)
                 return new ApiResponse<bool>(false, "El monto del abono debe ser mayor a cero.", false);
 
-            // Llamada al Factory con los 3 parámetros requeridos
             _factory.ProcesarAbonoCompleto(abono, clienteId, ejecutor);
 
             return new ApiResponse<bool>(true, "Abono procesado y saldos actualizados", true);
         }
         catch (UnauthorizedAccessException ex)
         {
-            // Captura el bloqueo de 'solo_lectura' definido en el Factory
             return new ApiResponse<bool>(false, ex.Message, false);
         }
         catch (Exception ex)
@@ -34,13 +36,19 @@ public class AbonoService(AbonoFactory factory) : IAbonoService
         }
     }
 
-    // 2. BUSCAR CUENTAS (Sincronizado con BuscarCxcClientes)
+    // 2. BUSCAR CUENTAS
     public ApiResponse<List<CxcConsultaDTO>> BuscarCuentas(string filtro, UsuarioDTO ejecutor)
     {
         try
         {
+            ejecutor.ValidarAcceso("abonos");
+
             var datos = _factory.BuscarCxcClientes(filtro, ejecutor);
             return new ApiResponse<List<CxcConsultaDTO>>(true, "Cuentas localizadas", datos);
+        }
+        catch (UnauthorizedAccessException ex)
+        {
+            return new ApiResponse<List<CxcConsultaDTO>>(false, ex.Message);
         }
         catch (Exception ex)
         {
@@ -48,13 +56,20 @@ public class AbonoService(AbonoFactory factory) : IAbonoService
         }
     }
 
-    // Agrega este método dentro de la clase AbonoService
-    public ApiResponse<List<AbonoHistorialDTO>> ObtenerHistorial(int facturaId)
+    // ACTUALIZADO: Ahora recibe UsuarioDTO para validar acceso
+    public ApiResponse<List<AbonoHistorialDTO>> ObtenerHistorial(int facturaId, UsuarioDTO ejecutor)
     {
         try
         {
+            // Seguridad: Validamos que el usuario pueda ver el módulo de abonos
+            ejecutor.ValidarAcceso("abonos");
+
             var lista = _factory.ListarHistorialAbonos(facturaId);
             return new ApiResponse<List<AbonoHistorialDTO>>(true, "Historial cargado", lista);
+        }
+        catch (UnauthorizedAccessException ex)
+        {
+            return new ApiResponse<List<AbonoHistorialDTO>>(false, ex.Message);
         }
         catch (Exception ex)
         {
@@ -62,14 +77,18 @@ public class AbonoService(AbonoFactory factory) : IAbonoService
         }
     }
 
-
-    // 3. ALERTAS DE MORA (Sincronizado con ObtenerAlertasVencimiento)
+    // 3. ALERTAS DE MORA
     public ApiResponse<List<AlertaCxcDTO>> ObtenerAlertasMora(UsuarioDTO ejecutor)
     {
         try
         {
+            ejecutor.ValidarAcceso("abonos");
             var alertas = _factory.ObtenerAlertasVencimiento(ejecutor);
             return new ApiResponse<List<AlertaCxcDTO>>(true, "Alertas de mora obtenidas", alertas);
+        }
+        catch (UnauthorizedAccessException ex)
+        {
+            return new ApiResponse<List<AlertaCxcDTO>>(false, ex.Message);
         }
         catch (Exception ex)
         {
@@ -77,13 +96,18 @@ public class AbonoService(AbonoFactory factory) : IAbonoService
         }
     }
 
-    // 4. RESUMEN GENERAL (Sincronizado con ObtenerTotalesCxc)
+    // 4. RESUMEN GENERAL
     public ApiResponse<ResumenCxcDTO> ObtenerResumenGeneral(UsuarioDTO ejecutor)
     {
         try
         {
+            ejecutor.ValidarAcceso("abonos");
             var resumen = _factory.ObtenerTotalesCxc(ejecutor);
             return new ApiResponse<ResumenCxcDTO>(true, "Resumen generado", resumen);
+        }
+        catch (UnauthorizedAccessException ex)
+        {
+            return new ApiResponse<ResumenCxcDTO>(false, ex.Message);
         }
         catch (Exception ex)
         {

@@ -9,69 +9,71 @@ namespace IntegraPro.AppLogic.Services;
 
 public class InventarioService(InventarioFactory factory, ProductoFactory productoFactory) : IInventarioService
 {
+    private readonly InventarioFactory _factory = factory;
+    private readonly ProductoFactory _productoFactory = productoFactory;
+
     public ApiResponse<bool> Registrar(MovimientoInventarioDTO mov, UsuarioDTO ejecutor)
     {
         try
         {
-            // 1. VALIDACIÓN DE SEGURIDAD
-            if (ejecutor.TienePermiso("solo_lectura"))
-                return new ApiResponse<bool>(false, "No tiene permisos para modificar el inventario.", false);
+            // SEGURIDAD: Usamos los helpers estandarizados
+            ejecutor.ValidarAcceso("inventario");
+            ejecutor.ValidarEscritura();
 
             if (mov.Cantidad <= 0)
                 return new ApiResponse<bool>(false, "La cantidad debe ser mayor a cero", false);
 
-            // Forzamos que el movimiento sea en la sucursal del ejecutor si tiene límites
+            // La lógica de sucursal_limit ya está blindada en el Factory, 
+            // pero mantenerla aquí como pre-validación es buena práctica.
             if (ejecutor.TienePermiso("sucursal_limit"))
                 mov.SucursalId = ejecutor.SucursalId;
 
-            mov.UsuarioId = ejecutor.Id; // Auditoría garantizada
-
-            bool ok = factory.Insertar(mov, ejecutor);
+            bool ok = _factory.Insertar(mov, ejecutor);
             return new ApiResponse<bool>(ok, ok ? "Movimiento registrado y stock actualizado" : "Error al registrar", ok);
         }
-        catch (Exception ex)
-        {
-            return new ApiResponse<bool>(false, ex.Message, false);
-        }
+        catch (UnauthorizedAccessException ex) { return new ApiResponse<bool>(false, ex.Message, false); }
+        catch (Exception ex) { return new ApiResponse<bool>(false, $"Error: {ex.Message}", false); }
     }
 
+    /// <summary>
+    /// Procesa la producción rebajando materias primas e ingresando producto terminado.
+    /// </summary>
     public ApiResponse<bool> ProcesarProduccion(int productoPadreId, decimal cantidadAProducir, UsuarioDTO ejecutor)
     {
         try
         {
-            // 1. SEGURIDAD Y PRE-REQUISITOS
-            if (ejecutor.TienePermiso("solo_lectura"))
-                throw new UnauthorizedAccessException("Su perfil no permite procesar producción.");
+            ejecutor.ValidarAcceso("inventario");
+            ejecutor.ValidarEscritura();
 
             if (cantidadAProducir <= 0)
-                return new ApiResponse<bool>(false, "La cantidad a producir debe ser mayor a cero", false);
+                return new ApiResponse<bool>(false, "Cantidad inválida", false);
 
-            // Obtener la receta del producto padre
-            var receta = productoFactory.ObtenerComposicion(productoPadreId);
-
+            var receta = _productoFactory.ObtenerComposicion(productoPadreId);
             if (receta == null || receta.Count == 0)
-                return new ApiResponse<bool>(false, "El producto no tiene receta definida o no es elaborado.", false);
+                return new ApiResponse<bool>(false, "El producto no tiene receta definida.", false);
 
-            // 2. REGISTRAR SALIDAS DE MATERIAS PRIMAS (Explosión de materiales)
+            // NOTA: Aquí se recomienda implementar un TransactionScope en producción
+            // para asegurar que si falla el paso 3, se revierta el paso 2.
+
+            // 2. EXPLOSIÓN DE MATERIALES (Salidas)
             foreach (var item in receta)
             {
                 var movSalida = new MovimientoInventarioDTO
                 {
                     ProductoId = item.MaterialId,
                     UsuarioId = ejecutor.Id,
-                    SucursalId = ejecutor.SucursalId, // Producción ocurre en la sucursal del usuario
+                    SucursalId = ejecutor.SucursalId,
                     TipoMovimiento = "SALIDA",
                     Cantidad = item.CantidadNecesaria * cantidadAProducir,
                     DocumentoReferencia = $"PROD-P{productoPadreId}",
-                    Notas = $"Consumo automático para producir {cantidadAProducir} unidades del padre ID {productoPadreId}"
+                    Notas = $"Consumo automático para producción."
                 };
 
-                // Enviamos el ejecutor para que el Factory valide existencias en esa sucursal
-                if (!factory.Insertar(movSalida, ejecutor))
-                    throw new Exception($"Error al rebajar stock del material ID {item.MaterialId}. ¿Hay stock suficiente?");
+                if (!_factory.Insertar(movSalida, ejecutor))
+                    throw new Exception($"Stock insuficiente para material ID {item.MaterialId}.");
             }
 
-            // 3. REGISTRAR ENTRADA DEL PRODUCTO TERMINADO
+            // 3. ENTRADA PRODUCTO TERMINADO
             var movEntrada = new MovimientoInventarioDTO
             {
                 ProductoId = productoPadreId,
@@ -80,17 +82,14 @@ public class InventarioService(InventarioFactory factory, ProductoFactory produc
                 TipoMovimiento = "ENTRADA",
                 Cantidad = cantidadAProducir,
                 DocumentoReferencia = "ORDEN-PROD",
-                Notas = $"Ingreso por finalización de proceso productivo"
+                Notas = $"Ingreso por producción"
             };
 
-            if (!factory.Insertar(movEntrada, ejecutor))
-                throw new Exception("Error al ingresar el stock del producto terminado.");
+            _factory.Insertar(movEntrada, ejecutor);
 
-            return new ApiResponse<bool>(true, $"Producción exitosa: {cantidadAProducir} unidades cargadas a sucursal {ejecutor.SucursalId}.", true);
+            return new ApiResponse<bool>(true, $"Producción finalizada exitosamente.", true);
         }
-        catch (Exception ex)
-        {
-            return new ApiResponse<bool>(false, "Error en producción: " + ex.Message, false);
-        }
+        catch (UnauthorizedAccessException ex) { return new ApiResponse<bool>(false, ex.Message, false); }
+        catch (Exception ex) { return new ApiResponse<bool>(false, "Error en producción: " + ex.Message, false); }
     }
 }

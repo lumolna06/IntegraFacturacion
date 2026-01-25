@@ -1,66 +1,51 @@
 ﻿using IntegraPro.AppLogic.Interfaces;
+using IntegraPro.AppLogic.Utils;
 using IntegraPro.DTO.Models;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Authorization;
 
 namespace IntegraPro.API.Controllers;
 
 [ApiController]
 [Route("api/[controller]")]
-public class ProductoController(IProductoService service) : ControllerBase
+[Authorize] // Exigimos Token JWT para cualquier operación de productos
+public class ProductoController(IProductoService service) : BaseController // Herencia de tu BaseController real
 {
     private readonly IProductoService _service = service;
 
     [HttpGet]
     public IActionResult Get()
     {
-        var response = _service.ObtenerTodos(ObtenerEjecutor());
+        // Usamos UsuarioActual (la propiedad real del BaseController)
+        var response = _service.ObtenerTodos(UsuarioActual);
         return response.Result ? Ok(response) : BadRequest(response);
     }
 
     [HttpGet("{id}")]
     public IActionResult GetById(int id)
     {
-        var response = _service.ObtenerPorId(id, ObtenerEjecutor());
+        var response = _service.ObtenerPorId(id, UsuarioActual);
         return response.Result ? Ok(response) : NotFound(response);
     }
 
     [HttpPost]
     public IActionResult Post([FromBody] ProductoDTO dto)
     {
-        var response = _service.Crear(dto, ObtenerEjecutor());
+        var response = _service.Crear(dto, UsuarioActual);
         return response.Result ? Ok(response) : BadRequest(response);
     }
 
     [HttpPut]
     public IActionResult Put([FromBody] ProductoDTO dto)
     {
-        var response = _service.Actualizar(dto, ObtenerEjecutor());
+        var response = _service.Actualizar(dto, UsuarioActual);
         return response.Result ? Ok(response) : BadRequest(response);
     }
 
     [HttpGet("alertas")]
     public IActionResult GetAlertas()
     {
-        var response = _service.ObtenerAlertasStock(ObtenerEjecutor());
+        var response = _service.ObtenerAlertasStock(UsuarioActual);
         return response.Result ? Ok(response) : BadRequest(response);
-    }
-
-    /// <summary>
-    /// Extrae la identidad del usuario desde el Token JWT.
-    /// </summary>
-    private UsuarioDTO ObtenerEjecutor()
-    {
-        if (User.Identity?.IsAuthenticated == true)
-        {
-            return new UsuarioDTO
-            {
-                Id = int.Parse(User.FindFirst("id")?.Value ?? "0"),
-                RolId = int.Parse(User.FindFirst("rolId")?.Value ?? "0"),
-                SucursalId = int.Parse(User.FindFirst("sucursalId")?.Value ?? "0")
-            };
-        }
-
-        // Usuario por defecto para desarrollo/pruebas
-        return new UsuarioDTO { Id = 1, RolId = 1, SucursalId = 1 };
     }
 }

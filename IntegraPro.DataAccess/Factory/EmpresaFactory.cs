@@ -11,10 +11,13 @@ public class EmpresaFactory(string connectionString) : MasterDao(connectionStrin
 {
     /// <summary>
     /// Obtiene la configuración global de la empresa. 
-    /// Este método suele ser público para reportes y facturación.
+    /// Se añade el ejecutor para validar que tiene permiso de acceso al módulo.
     /// </summary>
-    public EmpresaDTO? ObtenerConfiguracion()
+    public EmpresaDTO? ObtenerConfiguracion(UsuarioDTO ejecutor)
     {
+        // SEGURIDAD: Validar acceso preventivo
+        ejecutor.ValidarAcceso("config");
+
         string sql = @"SELECT TOP 1 id, nombre_comercial, cedula_juridica, 
                                 correo_notificaciones, tipo_regimen 
                        FROM EMPRESA";
@@ -35,20 +38,22 @@ public class EmpresaFactory(string connectionString) : MasterDao(connectionStrin
     }
 
     /// <summary>
-    /// Alias para compatibilidad con VentaService
+    /// Alias para compatibilidad con VentaService. 
+    /// Nota: Si VentaService lo usa internamente para imprimir facturas, 
+    /// asegúrate de pasar un ejecutor válido o sobrecargar si es un proceso automático.
     /// </summary>
-    public EmpresaDTO? ObtenerEmpresa() => ObtenerConfiguracion();
+    public EmpresaDTO? ObtenerEmpresa(UsuarioDTO ejecutor) => ObtenerConfiguracion(ejecutor);
 
     /// <summary>
-    /// Registra la empresa por primera vez. Valida que el ejecutor tenga permiso "config".
+    /// Registra la empresa por primera vez.
     /// </summary>
     public int RegistrarEmpresa(EmpresaDTO e, UsuarioDTO ejecutor)
     {
-        // 1. VALIDACIÓN DE SEGURIDAD (Solo Rol 1 o similar con permiso "config")
-        if (!ejecutor.TienePermiso("config") || ejecutor.TienePermiso("solo_lectura"))
-            throw new UnauthorizedAccessException("No tiene privilegios para registrar la configuración de la empresa.");
+        // SEGURIDAD: Usamos los helpers estandarizados
+        ejecutor.ValidarAcceso("config");
+        ejecutor.ValidarEscritura();
 
-        // 2. VALIDACIÓN DE EXISTENCIA PREVIA
+        // 2. VALIDACIÓN DE EXISTENCIA PREVIA (Lógica de negocio intacta)
         string sqlCheck = "SELECT COUNT(*) FROM EMPRESA";
         var count = Convert.ToInt32(ExecuteScalar(sqlCheck, null, false));
 
@@ -70,13 +75,13 @@ public class EmpresaFactory(string connectionString) : MasterDao(connectionStrin
     }
 
     /// <summary>
-    /// Actualiza los datos maestros. Valida permisos de configuración.
+    /// Actualiza los datos maestros.
     /// </summary>
     public void ActualizarEmpresa(EmpresaDTO e, UsuarioDTO ejecutor)
     {
-        // 1. VALIDACIÓN DE SEGURIDAD
-        if (!ejecutor.TienePermiso("config") || ejecutor.TienePermiso("solo_lectura"))
-            throw new UnauthorizedAccessException("Acceso denegado: No tiene permisos para modificar la configuración global.");
+        // SEGURIDAD: Usamos los helpers estandarizados
+        ejecutor.ValidarAcceso("config");
+        ejecutor.ValidarEscritura();
 
         string sql = @"UPDATE EMPRESA SET 
                         nombre_comercial = @nom, 

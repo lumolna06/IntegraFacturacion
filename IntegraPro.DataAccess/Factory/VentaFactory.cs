@@ -9,8 +9,8 @@ public class VentaFactory(string connectionString) : MasterDao(connectionString)
 {
     public string CrearFactura(FacturaDTO venta, UsuarioDTO ejecutor)
     {
-        // Seguridad: Forzar sucursal según permisos del ejecutor
-        if (ejecutor.TienePermiso("sucursal_limit"))
+        // Seguridad: Forzar sucursal según permisos del ejecutor (Si no es Admin Total)
+        if (ejecutor.TienePermiso("sucursal_limit") && !ejecutor.TienePermiso("all"))
             venta.SucursalId = ejecutor.SucursalId;
 
         using (var connection = new SqlConnection(connectionString))
@@ -32,7 +32,7 @@ public class VentaFactory(string connectionString) : MasterDao(connectionString)
                     decimal acumuladoImpuesto = 0;
                     var detallesProcesados = new List<FacturaDetalleDTO>();
 
-                    // 1. PROCESAR Y CALCULAR CADA LÍNEA DESDE LA DB
+                    // 1. PROCESAR Y CALCULAR CADA LÍNEA DESDE LA DB (Seguridad de Precios)
                     foreach (var item in venta.Detalles)
                     {
                         using (var cmdProd = new SqlCommand("SELECT nombre, costo_actual, porcentaje_impuesto, existencia FROM PRODUCTO WHERE id = @pid", connection, transaction))
@@ -115,7 +115,7 @@ public class VentaFactory(string connectionString) : MasterDao(connectionString)
 
                     int facturaId = Convert.ToInt32(ExecuteScalarInTransaction(sqlEnc, pEnc, connection, transaction));
 
-                    // 3. INSERTAR DETALLES Y ACTUALIZAR KARDEX
+                    // 3. INSERTAR DETALLES, ACTUALIZAR STOCK Y KARDEX
                     foreach (var det in detallesProcesados)
                     {
                         string sqlDet = @"INSERT INTO FACTURA_DETALLE 
@@ -132,16 +132,25 @@ public class VentaFactory(string connectionString) : MasterDao(connectionString)
                             new SqlParameter("@piva", det.PorcentajeImpuesto)
                         ], connection, transaction);
 
+                        // ACTUALIZACIÓN DE EXISTENCIAS (STOCK)
+                        string sqlUpdateStock = "UPDATE PRODUCTO SET existencia = existencia - @cant WHERE id = @pid";
+                        ExecuteNonQueryInTransaction(sqlUpdateStock, [
+                            new SqlParameter("@cant", det.Cantidad),
+                            new SqlParameter("@pid", det.ProductoId)
+                        ], connection, transaction);
+
+                        // REGISTRO EN KARDEX
                         string sqlKardex = @"INSERT INTO MOVIMIENTO_INVENTARIO 
                                             (producto_id, usuario_id, sucursal_id, fecha, tipo_movimiento, cantidad, documento_referencia, notas) 
-                                            VALUES (@pid, @uid, @sid, GETDATE(), 'SALIDA', @cant, @ref, 'Venta Automática')";
+                                            VALUES (@pid, @uid, @sid, GETDATE(), 'SALIDA', @cant, @ref, @notas)";
 
                         ExecuteNonQueryInTransaction(sqlKardex, [
                             new SqlParameter("@pid", det.ProductoId),
                             new SqlParameter("@uid", ejecutor.Id),
                             new SqlParameter("@sid", venta.SucursalId),
                             new SqlParameter("@cant", det.Cantidad),
-                            new SqlParameter("@ref", consecutivoHacienda)
+                            new SqlParameter("@ref", consecutivoHacienda),
+                            new SqlParameter("@notas", $"Venta Automática - Factura #{facturaId}")
                         ], connection, transaction);
                     }
 
@@ -177,11 +186,12 @@ public class VentaFactory(string connectionString) : MasterDao(connectionString)
                       LEFT JOIN CLIENTE c ON f.cliente_id = c.id 
                       WHERE f.id = @id";
 
-        if (ejecutor.TienePermiso("sucursal_limit"))
+        // Filtro de sucursal: Solo si no es Admin Total
+        if (ejecutor.TienePermiso("sucursal_limit") && !ejecutor.TienePermiso("all"))
             sql += " AND f.sucursal_id = @sid";
 
         var p = new List<SqlParameter> { new SqlParameter("@id", id) };
-        if (ejecutor.TienePermiso("sucursal_limit"))
+        if (ejecutor.TienePermiso("sucursal_limit") && !ejecutor.TienePermiso("all"))
             p.Add(new SqlParameter("@sid", ejecutor.SucursalId));
 
         var dt = ExecuteQuery(sql, p.ToArray(), false);
@@ -237,6 +247,7 @@ public class VentaFactory(string connectionString) : MasterDao(connectionString)
 
     public DataTable ObtenerReporteVentas(DateTime? desde, DateTime? hasta, int? clienteId, string busqueda, string condicionVenta, UsuarioDTO ejecutor)
     {
+        // Se asume que VW_REPORTE_VENTAS es una vista que une FACTURA_ENCABEZADO con CLIENTE
         string sql = "SELECT * FROM VW_REPORTE_VENTAS WHERE 1=1";
         List<SqlParameter> parametros = new List<SqlParameter>();
 
@@ -256,8 +267,10 @@ public class VentaFactory(string connectionString) : MasterDao(connectionString)
             parametros.Add(new SqlParameter("@cId", clienteId.Value));
         }
 
-        // Seguridad de Sucursal
-        if (ejecutor.TienePermiso("sucursal_limit"))
+        // LÓGICA DE SEGURIDAD ACTUALIZADA:
+        // Si el usuario tiene 'all', ve todo.
+        // Si no tiene 'all' pero tiene 'sucursal_limit', se filtra por su sucursal.
+        if (ejecutor.TienePermiso("sucursal_limit") && !ejecutor.TienePermiso("all"))
         {
             sql += " AND sucursal_id = @sId";
             parametros.Add(new SqlParameter("@sId", ejecutor.SucursalId));

@@ -1,62 +1,56 @@
 ﻿using IntegraPro.AppLogic.Interfaces;
 using IntegraPro.DTO.Models;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Authorization; // Necesario para [Authorize]
 using System.Security.Claims;
 
 namespace IntegraPro.API.Controllers;
 
 [Route("api/[controller]")]
 [ApiController]
+[Authorize] // <--- MEDIDA DE SEGURIDAD 1: Todo el controlador requiere JWT por defecto
 public class UsuarioController(IUsuarioService service) : ControllerBase
 {
     private readonly IUsuarioService _service = service;
 
     [HttpPost("login")]
+    [AllowAnonymous] // <--- MEDIDA DE SEGURIDAD 2: El login es la única puerta abierta
     public IActionResult Login([FromBody] LoginRequest request)
     {
         var result = _service.Login(request.Username, request.Password);
-
         if (!result.Result) return Unauthorized(result);
-
         return Ok(result);
     }
 
     [HttpPost("registrar")]
     public IActionResult Registrar([FromBody] UsuarioDTO usuario)
     {
-        // CORRECCIÓN: Se pasa el ejecutor
         var result = _service.Registrar(usuario, ObtenerEjecutor());
-
         if (!result.Result) return BadRequest(result);
-
         return Ok(result);
     }
 
     [HttpPost("logout/{id}")]
     public IActionResult Logout(int id)
     {
+        // Validamos que el usuario solo pueda cerrarse la sesión a sí mismo 
+        // a menos que sea un administrador.
         var result = _service.Logout(id);
         return Ok(result);
     }
 
     [HttpPost("forzar-cierre")]
+    [AllowAnonymous] // Se permite anónimo para que el usuario libere su propia sesión si se trabó
     public IActionResult ForzarCierre([FromBody] LoginRequest request)
     {
         var result = _service.ForzarCierreSesion(request.Username, request.Password);
-
         if (!result.Result) return BadRequest(result);
-
         return Ok(result);
     }
-
-    // ==========================================
-    // ENDPOINTS DE ADMINISTRACIÓN
-    // ==========================================
 
     [HttpGet("listar-todos")]
     public IActionResult GetAll()
     {
-        // CORRECCIÓN: Se pasa el ejecutor
         var result = _service.ObtenerTodos(ObtenerEjecutor());
         return Ok(result);
     }
@@ -64,7 +58,6 @@ public class UsuarioController(IUsuarioService service) : ControllerBase
     [HttpGet("roles-disponibles")]
     public IActionResult GetRoles()
     {
-        // CORRECCIÓN: Se pasa el ejecutor
         var result = _service.ListarRolesDisponibles(ObtenerEjecutor());
         return Ok(result);
     }
@@ -72,43 +65,28 @@ public class UsuarioController(IUsuarioService service) : ControllerBase
     [HttpPut("actualizar-rol")]
     public IActionResult UpdateRol([FromQuery] int usuarioId, [FromQuery] int nuevoRolId)
     {
-        // CORRECCIÓN: Se pasa el ejecutor
         var result = _service.ActualizarRol(usuarioId, nuevoRolId, ObtenerEjecutor());
-
         if (!result.Result) return BadRequest(result);
-
         return Ok(result);
     }
 
-    /// <summary>
-    /// Método privado para obtener los datos del usuario que está operando.
-    /// Esto resuelve los errores de "No se ha dado ningún argumento que corresponda al parámetro ejecutor".
-    /// </summary>
     private UsuarioDTO ObtenerEjecutor()
     {
-        // 1. Si el usuario está autenticado (JWT enviado)
+        // MEDIDA DE SEGURIDAD 3: Sincronización exacta con los claims del JWT generado en el Service
         if (User.Identity?.IsAuthenticated == true)
         {
             return new UsuarioDTO
             {
-                Id = int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "0"),
-                RolId = int.Parse(User.FindFirst("RolId")?.Value ?? "0"),
-                SucursalId = int.Parse(User.FindFirst("SucursalId")?.Value ?? "0"),
+                // Usamos los strings exactos que definimos en UsuarioService.GenerarJwtToken
+                Id = int.Parse(User.FindFirst("id")?.Value ?? "0"),
+                RolId = int.Parse(User.FindFirst("rolId")?.Value ?? "0"),
+                SucursalId = int.Parse(User.FindFirst("sucursalId")?.Value ?? "0"),
                 Username = User.Identity.Name ?? string.Empty,
-                // IMPORTANTE: Al asignar esto, el DTO llena el diccionario automáticamente
-                PermisosJson = User.FindFirst("Permisos")?.Value
+                PermisosJson = User.FindFirst("permisos")?.Value
             };
         }
 
-        // 2. Fallback (Solo para pruebas iniciales si no hay token)
-        // ADVERTENCIA: Una vez que el sistema esté en producción, esto debería lanzar una excepción
-        return new UsuarioDTO
-        {
-            Id = 1,
-            RolId = 1,
-            SucursalId = 1,
-            Username = "admin_test",
-            PermisosJson = "{\"all\": true}" // Usamos el JSON para disparar la lógica del DTO
-        };
+        // Ya no devolvemos un Admin de prueba. Si llegamos aquí, es un error de seguridad.
+        throw new UnauthorizedAccessException("Operación no permitida sin una sesión válida.");
     }
 }
