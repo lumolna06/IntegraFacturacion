@@ -13,12 +13,13 @@ public class FacturaDTO
     public DateTime Fecha { get; set; }
     public string CondicionVenta { get; set; } = "Contado";
     public string MedioPago { get; set; } = "Efectivo";
+
     public decimal TotalNeto { get; set; }
+    public decimal TotalDescuento { get; set; } // Ahora es decimal estándar (no nulo)
     public decimal TotalImpuesto { get; set; }
     public decimal TotalComprobante { get; set; }
 
-    // CAMPOS DE CONTROL PARA EL FLUJO AUTOMÁTICO
-    public string? EstadoHacienda { get; set; } = "LOCAL"; // LOCAL, ACEPTADO, RECHAZADO
+    public string? EstadoHacienda { get; set; } = "LOCAL";
     public bool EsOffline { get; set; } = true;
 
     public List<FacturaDetalleDTO> Detalles { get; set; } = new();
@@ -30,9 +31,9 @@ public class FacturaDetalleDTO
     public string? ProductoNombre { get; set; }
     public decimal Cantidad { get; set; }
     public decimal PrecioUnitario { get; set; }
-    public decimal PorcentajeImpuesto { get; set; }
-    public decimal MontoImpuesto { get; set; }
+    public decimal PorcentajeImpuesto { get; set; } = 13;
+    public decimal MontoImpuesto { get; set; } // Ahora permite asignación
     public decimal PorcentajeDescuento { get; set; }
-    public decimal MontoDescuento { get; set; }
-    public decimal TotalLinea { get; set; }
+    public decimal MontoDescuento { get; set; } // Ahora permite asignación
+    public decimal TotalLinea { get; set; } // Ahora permite asignación
 }

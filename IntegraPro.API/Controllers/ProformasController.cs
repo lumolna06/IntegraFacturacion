@@ -1,123 +1,97 @@
-﻿using IntegraPro.AppLogic.Services;
+﻿using IntegraPro.AppLogic.Interfaces;
 using IntegraPro.DTO.Models;
 using Microsoft.AspNetCore.Mvc;
-using QuestPDF.Fluent;      // Necesario para .GeneratePdf()
-using QuestPDF.Infrastructure; // Necesario para LicenseType
+using QuestPDF.Fluent;
+using QuestPDF.Infrastructure;
 using System;
+using System.Collections.Generic;
 
 namespace IntegraPro.API.Controllers;
 
 [ApiController]
 [Route("api/[controller]")]
-public class ProformasController(ProformaService service) : ControllerBase
+public class ProformasController(
+    IProformaService service,
+    IConfiguracionService configService) : ControllerBase
 {
-    // Crear una nueva proforma
+    private readonly IProformaService _service = service;
+    private readonly IConfiguracionService _configService = configService;
+
     [HttpPost]
     public IActionResult Post(ProformaEncabezadoDTO dto)
     {
-        try
-        {
-            var id = service.GuardarProforma(dto);
-            return Ok(new { id, message = "Proforma registrada exitosamente" });
-        }
-        catch (Exception ex)
-        {
-            return BadRequest(new { success = false, message = ex.Message });
-        }
+        var res = _service.GuardarProforma(dto, ObtenerEjecutor());
+        return res.Result ? Ok(res) : BadRequest(res);
     }
 
-    // Listado general con filtro opcional
     [HttpGet]
     public IActionResult Get(string filtro = "")
-        => Ok(service.Consultar(filtro));
+    {
+        var res = _service.Consultar(filtro, ObtenerEjecutor());
+        return Ok(res);
+    }
 
-    // OBTENER UNA SOLA PROFORMA
     [HttpGet("{id}")]
     public IActionResult GetById(int id)
     {
-        var proforma = service.ObtenerPorId(id);
-        if (proforma == null) return NotFound(new { message = "La proforma solicitada no existe" });
-        return Ok(proforma);
+        var res = _service.ObtenerPorId(id, ObtenerEjecutor());
+        return res.Result ? Ok(res) : NotFound(res);
     }
 
-    // --- ENDPOINT PARA IMPRIMIR PDF (CORREGIDO) ---
     [HttpGet("{id}/imprimir")]
     public IActionResult GenerarPdf(int id)
     {
         try
         {
-            // 1. Obtener los datos de la proforma
-            var proforma = service.ObtenerPorId(id);
-            if (proforma == null) return NotFound(new { message = "Proforma no encontrada" });
+            var ejecutor = ObtenerEjecutor();
+            var resProforma = _service.ObtenerPorId(id, ejecutor);
+            var resEmpresa = _configService.ObtenerDatosEmpresa();
 
-            // 2. Obtener los datos de la empresa (Usa el nuevo método del Service)
-            var datosEmpresa = service.ObtenerEmpresa();
-            if (datosEmpresa == null) return BadRequest(new { message = "Debe configurar los datos de la empresa primero." });
+            if (!resProforma.Result || resProforma.Data == null) return NotFound(resProforma);
+            if (!resEmpresa.Result || resEmpresa.Data == null) return BadRequest(resEmpresa);
 
-            // Configurar licencia para QuestPDF
             QuestPDF.Settings.License = LicenseType.Community;
-
-            // 3. Instanciar el reporte pasando AMBOS objetos para cumplir con el constructor
-            var documento = new Reports.ProformaReport(proforma, datosEmpresa);
+            var documento = new Reports.ProformaReport(resProforma.Data, resEmpresa.Data);
             byte[] pdfBytes = documento.GeneratePdf();
 
-            // Retornar el archivo PDF para abrir o descargar
             return File(pdfBytes, "application/pdf", $"Proforma_{id}.pdf");
         }
         catch (Exception ex)
         {
-            return BadRequest(new { success = false, message = "Error al generar el reporte: " + ex.Message });
+            return BadRequest(new { success = false, message = "Error en reporte: " + ex.Message });
         }
     }
 
-    // Buscar proformas de un cliente específico
     [HttpGet("cliente/{clienteId}")]
     public IActionResult GetByCliente(int clienteId)
-        => Ok(service.ObtenerPorCliente(clienteId));
-
-    // Editar una proforma existente
-    [HttpPut("{id}")]
-    public IActionResult Put(int id, ProformaEncabezadoDTO dto)
     {
-        try
-        {
-            dto.Id = id;
-            service.EditarProforma(dto);
-            return Ok(new { success = true, message = "Proforma actualizada exitosamente" });
-        }
-        catch (Exception ex)
-        {
-            return BadRequest(new { success = false, message = ex.Message });
-        }
+        var res = _service.ObtenerPorCliente(clienteId, ObtenerEjecutor());
+        return Ok(res);
     }
 
-    // ANULAR PROFORMA
     [HttpPatch("{id}/anular")]
     public IActionResult Anular(int id)
     {
-        try
-        {
-            service.Anular(id);
-            return Ok(new { success = true, message = "Proforma anulada correctamente" });
-        }
-        catch (Exception ex)
-        {
-            return BadRequest(new { success = false, message = ex.Message });
-        }
+        var res = _service.Anular(id, ObtenerEjecutor());
+        return res.Result ? Ok(res) : BadRequest(res);
     }
 
-    // Convertir proforma a factura
     [HttpPost("{id}/convertir-a-factura")]
-    public IActionResult Facturar(int id, [FromQuery] int usuarioId, [FromQuery] string medio = "Efectivo")
+    public IActionResult Facturar(int id, [FromQuery] string medio = "Efectivo")
     {
-        try
+        var res = _service.Facturar(id, medio, ObtenerEjecutor());
+        return res.Result ? Ok(res) : BadRequest(res);
+    }
+
+    private UsuarioDTO ObtenerEjecutor()
+    {
+        // En producción, extraer de Claims JWT
+        return new UsuarioDTO
         {
-            var nDoc = service.Facturar(id, usuarioId, medio);
-            return Ok(new { success = true, numeroFactura = nDoc });
-        }
-        catch (Exception ex)
-        {
-            return BadRequest(new { success = false, message = ex.Message });
-        }
+            Id = 3,
+            RolId = 1,
+            SucursalId = 1,
+            Permisos = new Dictionary<string, bool> { { "proformas", true }, { "ventas", false }, { "config", true } }
+        };
     }
 }

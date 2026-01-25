@@ -5,9 +5,14 @@ namespace IntegraPro.AppLogic.Interfaces;
 
 public interface IProductoService
 {
-    ApiResponse<List<ProductoDTO>> ObtenerTodos();
-    ApiResponse<ProductoDTO> ObtenerPorId(int id);
-    ApiResponse<bool> Crear(ProductoDTO producto);
-    ApiResponse<bool> Actualizar(ProductoDTO producto);
-    ApiResponse<List<ProductoDTO>> ObtenerAlertasStock();
+    // Todos los métodos ahora requieren el 'ejecutor' para filtrar por sucursal o validar roles
+    ApiResponse<List<ProductoDTO>> ObtenerTodos(UsuarioDTO ejecutor);
+
+    ApiResponse<ProductoDTO> ObtenerPorId(int id, UsuarioDTO ejecutor);
+
+    ApiResponse<bool> Crear(ProductoDTO producto, UsuarioDTO ejecutor);
+
+    ApiResponse<bool> Actualizar(ProductoDTO producto, UsuarioDTO ejecutor);
+
+    ApiResponse<List<ProductoDTO>> ObtenerAlertasStock(UsuarioDTO ejecutor);
 }

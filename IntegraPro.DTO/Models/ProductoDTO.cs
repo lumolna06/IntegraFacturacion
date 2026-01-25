@@ -8,10 +8,9 @@ public class ProductoDTO
     public string? CodigoBarras { get; set; }
     public string Nombre { get; set; } = string.Empty;
     public string? Descripcion { get; set; }
-    public string UnidadMedida { get; set; } = "Unid"; // Unid, Kg, M2, M
+    public string UnidadMedida { get; set; } = "Unid";
     public decimal CostoActual { get; set; }
 
-    // Niveles de precios según tu tabla SQL
     public decimal Precio1 { get; set; }
     public decimal? Precio2 { get; set; }
     public decimal? Precio3 { get; set; }
@@ -20,13 +19,16 @@ public class ProductoDTO
     public decimal Existencia { get; set; }
     public decimal StockMinimo { get; set; }
 
-    // Configuración fiscal y de tipo
-    public bool ExentoIva { get; set; } // Coincide con exento_iva de tu tabla
+    public bool ExentoIva { get; set; }
+    public decimal PorcentajeImpuesto { get; set; } // Faltaba según tu SQL
     public bool Activo { get; set; }
     public bool EsServicio { get; set; }
-    public bool EsElaborado { get; set; } // Si es TRUE, usa receta
+    public bool EsElaborado { get; set; }
 
-    // Propiedad para manejar la receta/composición
+    // --- PROPIEDADES DE CONTEXTO ---
+    // Esta es la que causaba el error CS1061
+    public int SucursalId { get; set; }
+
     public List<ProductoComposicionDTO> Receta { get; set; } = new();
 }
 

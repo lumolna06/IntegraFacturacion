@@ -7,8 +7,12 @@ namespace IntegraPro.DataAccess.Factory;
 
 public class VentaFactory(string connectionString) : MasterDao(connectionString)
 {
-    public string CrearFactura(FacturaDTO venta)
+    public string CrearFactura(FacturaDTO venta, UsuarioDTO ejecutor)
     {
+        // Seguridad: Forzar sucursal según permisos del ejecutor
+        if (ejecutor.TienePermiso("sucursal_limit"))
+            venta.SucursalId = ejecutor.SucursalId;
+
         using (var connection = new SqlConnection(connectionString))
         {
             connection.Open();
@@ -16,6 +20,14 @@ public class VentaFactory(string connectionString) : MasterDao(connectionString)
             {
                 try
                 {
+                    // 0. VALIDACIÓN DE CONFIGURACIÓN (STOCK NEGATIVO)
+                    bool permitirNegativo = false;
+                    using (var cmdEmp = new SqlCommand("SELECT TOP 1 permitir_stock_negativo FROM EMPRESA", connection, transaction))
+                    {
+                        var resultEmp = cmdEmp.ExecuteScalar();
+                        permitirNegativo = resultEmp != null && Convert.ToBoolean(resultEmp);
+                    }
+
                     decimal acumuladoNeto = 0;
                     decimal acumuladoImpuesto = 0;
                     var detallesProcesados = new List<FacturaDetalleDTO>();
@@ -23,7 +35,7 @@ public class VentaFactory(string connectionString) : MasterDao(connectionString)
                     // 1. PROCESAR Y CALCULAR CADA LÍNEA DESDE LA DB
                     foreach (var item in venta.Detalles)
                     {
-                        using (var cmdProd = new SqlCommand("SELECT nombre, costo_actual, porcentaje_impuesto FROM PRODUCTO WHERE id = @pid", connection, transaction))
+                        using (var cmdProd = new SqlCommand("SELECT nombre, costo_actual, porcentaje_impuesto, existencia FROM PRODUCTO WHERE id = @pid", connection, transaction))
                         {
                             cmdProd.Parameters.AddWithValue("@pid", item.ProductoId);
                             using (var reader = cmdProd.ExecuteReader())
@@ -31,8 +43,16 @@ public class VentaFactory(string connectionString) : MasterDao(connectionString)
                                 if (!reader.Read())
                                     throw new Exception($"El producto con ID {item.ProductoId} no existe.");
 
+                                decimal stockActual = reader.GetDecimal(reader.GetOrdinal("existencia"));
                                 decimal precioReal = reader.GetDecimal(reader.GetOrdinal("costo_actual"));
                                 decimal porcentajeIvaReal = reader.GetDecimal(reader.GetOrdinal("porcentaje_impuesto"));
+                                string nombreProd = reader.GetString(reader.GetOrdinal("nombre"));
+
+                                // VALIDACIÓN DE STOCK REAL-TIME
+                                if (!permitirNegativo && stockActual < item.Cantidad)
+                                {
+                                    throw new Exception($"Stock insuficiente para '{nombreProd}'. Disponible: {stockActual}, Solicitado: {item.Cantidad}");
+                                }
 
                                 decimal montoNetoLinea = item.Cantidad * precioReal;
                                 decimal montoIvaLinea = montoNetoLinea * (porcentajeIvaReal / 100);
@@ -71,17 +91,17 @@ public class VentaFactory(string connectionString) : MasterDao(connectionString)
 
                     // 2. INSERTAR ENCABEZADO
                     string sqlEnc = @"INSERT INTO FACTURA_ENCABEZADO 
-                                     (cliente_id, sucursal_id, usuario_id, consecutivo, clave_numerica, fecha, 
-                                      condicion_venta, medio_pago, total_neto, total_impuesto, total_comprobante, 
-                                      estado_hacienda, es_offline) 
-                                     VALUES (@cid, @sid, @uid, @cons, @clave, GETDATE(), 
-                                             @cond, @medio, @neto, @iva, @total, @estado, @offline);
-                                     SELECT CAST(SCOPE_IDENTITY() as int);";
+                                      (cliente_id, sucursal_id, usuario_id, consecutivo, clave_numerica, fecha, 
+                                       condicion_venta, medio_pago, total_neto, total_impuesto, total_comprobante, 
+                                       estado_hacienda, es_offline) 
+                                      VALUES (@cid, @sid, @uid, @cons, @clave, GETDATE(), 
+                                              @cond, @medio, @neto, @iva, @total, @estado, @offline);
+                                      SELECT CAST(SCOPE_IDENTITY() as int);";
 
                     var pEnc = new[] {
-                        new SqlParameter("@cid", venta.ClienteId),
+                        new SqlParameter("@cid", (venta.ClienteId == 0 ? DBNull.Value : venta.ClienteId)),
                         new SqlParameter("@sid", venta.SucursalId),
-                        new SqlParameter("@uid", venta.UsuarioId),
+                        new SqlParameter("@uid", ejecutor.Id),
                         new SqlParameter("@cons", consecutivoHacienda),
                         new SqlParameter("@clave", claveNumerica),
                         new SqlParameter("@cond", venta.CondicionVenta ?? "Contado"),
@@ -113,12 +133,13 @@ public class VentaFactory(string connectionString) : MasterDao(connectionString)
                         ], connection, transaction);
 
                         string sqlKardex = @"INSERT INTO MOVIMIENTO_INVENTARIO 
-                                           (producto_id, usuario_id, fecha, tipo_movimiento, cantidad, documento_referencia, notas) 
-                                           VALUES (@pid, @uid, GETDATE(), 'SALIDA', @cant, @ref, 'Venta Automática')";
+                                            (producto_id, usuario_id, sucursal_id, fecha, tipo_movimiento, cantidad, documento_referencia, notas) 
+                                            VALUES (@pid, @uid, @sid, GETDATE(), 'SALIDA', @cant, @ref, 'Venta Automática')";
 
                         ExecuteNonQueryInTransaction(sqlKardex, [
                             new SqlParameter("@pid", det.ProductoId),
-                            new SqlParameter("@uid", venta.UsuarioId),
+                            new SqlParameter("@uid", ejecutor.Id),
+                            new SqlParameter("@sid", venta.SucursalId),
                             new SqlParameter("@cant", det.Cantidad),
                             new SqlParameter("@ref", consecutivoHacienda)
                         ], connection, transaction);
@@ -147,7 +168,7 @@ public class VentaFactory(string connectionString) : MasterDao(connectionString)
         return pais + dia + mes + anio + cedula + consecutivo + situacion + codigoSeguridad;
     }
 
-    public FacturaDTO? ObtenerPorId(int id)
+    public FacturaDTO? ObtenerPorId(int id, UsuarioDTO ejecutor)
     {
         string sql = @"SELECT f.*, 
                                ISNULL(c.nombre, 'CLIENTE CONTADO') as ClienteNombre, 
@@ -156,7 +177,14 @@ public class VentaFactory(string connectionString) : MasterDao(connectionString)
                       LEFT JOIN CLIENTE c ON f.cliente_id = c.id 
                       WHERE f.id = @id";
 
-        var dt = ExecuteQuery(sql, [new SqlParameter("@id", id)], false);
+        if (ejecutor.TienePermiso("sucursal_limit"))
+            sql += " AND f.sucursal_id = @sid";
+
+        var p = new List<SqlParameter> { new SqlParameter("@id", id) };
+        if (ejecutor.TienePermiso("sucursal_limit"))
+            p.Add(new SqlParameter("@sid", ejecutor.SucursalId));
+
+        var dt = ExecuteQuery(sql, p.ToArray(), false);
         if (dt == null || dt.Rows.Count == 0) return null;
 
         var row = dt.Rows[0];
@@ -173,7 +201,8 @@ public class VentaFactory(string connectionString) : MasterDao(connectionString)
             TotalImpuesto = Convert.ToDecimal(row["total_impuesto"]),
             TotalComprobante = Convert.ToDecimal(row["total_comprobante"]),
             CondicionVenta = row["condicion_venta"]?.ToString() ?? "Contado",
-            MedioPago = row["medio_pago"]?.ToString() ?? "Efectivo"
+            MedioPago = row["medio_pago"]?.ToString() ?? "Efectivo",
+            SucursalId = Convert.ToInt32(row["sucursal_id"])
         };
     }
 
@@ -206,8 +235,7 @@ public class VentaFactory(string connectionString) : MasterDao(connectionString)
         return lista;
     }
 
-    // MODIFICADO: Ahora incluye filtro por condicionVenta
-    public DataTable ObtenerReporteVentas(DateTime? desde, DateTime? hasta, int? clienteId, int? sucursalId, string busqueda, string? condicionVenta = "")
+    public DataTable ObtenerReporteVentas(DateTime? desde, DateTime? hasta, int? clienteId, string busqueda, string condicionVenta, UsuarioDTO ejecutor)
     {
         string sql = "SELECT * FROM VW_REPORTE_VENTAS WHERE 1=1";
         List<SqlParameter> parametros = new List<SqlParameter>();
@@ -222,18 +250,19 @@ public class VentaFactory(string connectionString) : MasterDao(connectionString)
             sql += " AND fecha <= @hasta";
             parametros.Add(new SqlParameter("@hasta", hasta.Value.Date.AddDays(1).AddSeconds(-1)));
         }
-        if (clienteId.HasValue)
+        if (clienteId.HasValue && clienteId > 0)
         {
             sql += " AND cliente_id = @cId";
             parametros.Add(new SqlParameter("@cId", clienteId.Value));
         }
-        if (sucursalId.HasValue)
+
+        // Seguridad de Sucursal
+        if (ejecutor.TienePermiso("sucursal_limit"))
         {
             sql += " AND sucursal_id = @sId";
-            parametros.Add(new SqlParameter("@sId", sucursalId.Value));
+            parametros.Add(new SqlParameter("@sId", ejecutor.SucursalId));
         }
 
-        // FILTRO DE CONDICIÓN DE VENTA
         if (!string.IsNullOrEmpty(condicionVenta))
         {
             sql += " AND condicion_venta = @condicion";

@@ -1,61 +1,59 @@
-﻿using IntegraPro.DataAccess.Factory;
+﻿using IntegraPro.AppLogic.Interfaces;
 using IntegraPro.DTO.Models;
 using Microsoft.AspNetCore.Mvc;
-using System;
 
 namespace IntegraPro.API.Controllers;
 
 [ApiController]
 [Route("api/[controller]")]
-public class ConfiguracionController(ConfiguracionFactory factory) : ControllerBase
+public class ConfiguracionController(IConfiguracionService service) : ControllerBase
 {
-    // OBTENER TODOS LOS DATOS: GET api/configuracion/empresa
+    private readonly IConfiguracionService _service = service;
+
+    // GET api/configuracion/empresa
     [HttpGet("empresa")]
     public IActionResult GetEmpresa()
     {
-        try
-        {
-            var datos = factory.ObtenerEmpresa();
-            if (datos == null)
-                return NotFound(new { message = "No se encontraron datos de configuración para la empresa." });
-
-            return Ok(datos);
-        }
-        catch (Exception ex)
-        {
-            return BadRequest(new { success = false, message = "Error al obtener datos: " + ex.Message });
-        }
+        var res = _service.ObtenerDatosEmpresa();
+        return res.Result ? Ok(res) : NotFound(res);
     }
 
-    // CREAR O ACTUALIZAR (UPSERT): POST api/configuracion/empresa
+    // POST api/configuracion/empresa
     [HttpPost("empresa")]
-    public IActionResult SaveEmpresa(EmpresaDTO dto)
+    public IActionResult SaveEmpresa([FromBody] EmpresaDTO dto)
     {
-        try
-        {
-            factory.GuardarEmpresa(dto);
-            return Ok(new { success = true, message = "Datos de empresa procesados correctamente." });
-        }
-        catch (Exception ex)
-        {
-            return BadRequest(new { success = false, message = "Error al guardar: " + ex.Message });
-        }
+        // ERROR CS7036 EVITADO: Enviamos el ejecutor para validar permisos 'config'
+        var res = _service.ActualizarEmpresa(dto, ObtenerEjecutor());
+        return res.Result ? Ok(res) : BadRequest(res);
     }
 
-    // ACTUALIZAR REGISTRO EXISTENTE: PUT api/configuracion/empresa/1
+    // PUT api/configuracion/empresa/1
     [HttpPut("empresa/{id}")]
-    public IActionResult UpdateEmpresa(int id, EmpresaDTO dto)
+    public IActionResult UpdateEmpresa(int id, [FromBody] EmpresaDTO dto)
     {
-        try
+        dto.Id = id;
+        var res = _service.ActualizarEmpresa(dto, ObtenerEjecutor());
+        return res.Result ? Ok(res) : BadRequest(res);
+    }
+
+    /// <summary>
+    /// Extrae la identidad del usuario desde el Token JWT.
+    /// </summary>
+    private UsuarioDTO ObtenerEjecutor()
+    {
+        if (User.Identity?.IsAuthenticated == true)
         {
-            // Forzamos el ID del DTO para que coincida con el de la URL (generalmente 1)
-            dto.Id = id;
-            factory.GuardarEmpresa(dto);
-            return Ok(new { success = true, message = $"Datos de la empresa con ID {id} actualizados correctamente." });
+            return new UsuarioDTO
+            {
+                Id = int.Parse(User.FindFirst("id")?.Value ?? "0"),
+                RolId = int.Parse(User.FindFirst("rolId")?.Value ?? "0"),
+                SucursalId = int.Parse(User.FindFirst("sucursalId")?.Value ?? "0"),
+                // Importante: El diccionario de permisos debe cargarse aquí si lo usas
+                Permisos = new Dictionary<string, bool> { { "config", User.IsInRole("Admin") } }
+            };
         }
-        catch (Exception ex)
-        {
-            return BadRequest(new { success = false, message = "Error al actualizar: " + ex.Message });
-        }
+
+        // Usuario temporal para desarrollo si no hay token (quitar en producción)
+        return new UsuarioDTO { Id = 1, RolId = 1, SucursalId = 1, Permisos = new Dictionary<string, bool> { { "config", true } } };
     }
 }

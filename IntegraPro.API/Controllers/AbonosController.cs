@@ -1,103 +1,57 @@
 ﻿using Microsoft.AspNetCore.Mvc;
-using IntegraPro.AppLogic.Services;
+using IntegraPro.AppLogic.Interfaces;
 using IntegraPro.DTO.Models;
 
 namespace IntegraPro.API.Controllers;
 
 [Route("api/[controller]")]
 [ApiController]
-public class AbonosController(AbonoService abonoService) : ControllerBase
+public class AbonosController(IAbonoService service) : ControllerBase
 {
-    private readonly AbonoService _abonoService = abonoService;
+    private readonly IAbonoService _service = service;
 
-    // 1. RESUMEN GENERAL (Para tarjetas del Dashboard)
-    [HttpGet("resumen-general")]
-    public IActionResult GetResumen()
+    [HttpGet("buscar")]
+    public IActionResult Buscar([FromQuery] string? filtro = null) // SE CORRIGIÓ: string? y = null
     {
-        try
-        {
-            var resumen = _abonoService.ObtenerResumenGeneral();
-            return Ok(new { success = true, data = resumen });
-        }
-        catch (Exception ex)
-        {
-            return BadRequest(new { success = false, message = ex.Message });
-        }
+        // Al ser opcional, si no envías nada en la URL, llegará como null
+        // y tu Factory ejecutará la consulta sin filtros (traerá todo).
+        var res = _service.BuscarCuentas(filtro, ObtenerEjecutor());
+        return res.Result ? Ok(res) : BadRequest(res);
     }
 
-    // 2. BUSCAR CUENTAS POR COBRAR (Filtro por nombre, factura o cédula)
-    [HttpGet("buscar-cxc")]
-    public IActionResult BuscarCxc([FromQuery] string filtro)
+    [HttpGet("dashboard/resumen")]
+    public IActionResult Resumen()
     {
-        try
-        {
-            var resultados = _abonoService.BuscarCuentasPorCobrar(filtro ?? "");
-            return Ok(new { success = true, data = resultados });
-        }
-        catch (Exception ex)
-        {
-            return BadRequest(new { success = false, message = ex.Message });
-        }
+        var res = _service.ObtenerResumenGeneral(ObtenerEjecutor());
+        return res.Result ? Ok(res) : BadRequest(res);
     }
 
-    // 3. ALERTAS DE MORA (Facturas ya vencidas)
-    [HttpGet("alertas-mora")]
-    public IActionResult GetAlertasMora()
+    [HttpPost("registrar/{clienteId}")]
+    public IActionResult Registrar(int clienteId, [FromBody] AbonoDTO abono)
     {
-        try
-        {
-            var alertas = _abonoService.ListarAlertasMora();
-            return Ok(new { success = true, data = alertas });
-        }
-        catch (Exception ex)
-        {
-            return BadRequest(new { success = false, message = ex.Message });
-        }
+        var res = _service.ProcesarAbono(abono, clienteId, ObtenerEjecutor());
+        return res.Result ? Ok(res) : BadRequest(res);
     }
 
-    // 4. HISTORIAL DE ABONOS DE UNA FACTURA ESPECÍFICA
-    [HttpGet("{cuentaId}/historial")] // <-- Swagger mostrará "cuentaId"
-    public IActionResult GetHistorial(int cuentaId)
+    [HttpGet("historial/{cuentaId}")]
+    public IActionResult Historial(int cuentaId)
     {
-        try
-        {
-            // Pasamos el ID al servicio (no importa que el servicio lo reciba como 'facturaId')
-            var historial = _abonoService.ObtenerHistorialDeAbonos(cuentaId);
-            return Ok(new { success = true, data = historial });
-        }
-        catch (Exception ex)
-        {
-            return BadRequest(new { success = false, message = ex.Message });
-        }
+        var res = _service.ObtenerHistorial(cuentaId);
+        return res.Result ? Ok(res) : BadRequest(res);
     }
 
-    // 5. CONSULTAR FACTURAS PENDIENTES (Tu método original actualizado)
-    [HttpGet("Pendientes")]
-    public IActionResult GetPendientes([FromQuery] int? clienteId)
+    private UsuarioDTO ObtenerEjecutor()
     {
-        try
+        if (User.Identity?.IsAuthenticated == true)
         {
-            var pendientes = _abonoService.ObtenerPendientes(clienteId);
-            return Ok(new { success = true, data = pendientes });
+            return new UsuarioDTO
+            {
+                Id = int.Parse(User.FindFirst("id")?.Value ?? "0"),
+                RolId = int.Parse(User.FindFirst("rolId")?.Value ?? "0"),
+                SucursalId = int.Parse(User.FindFirst("sucursalId")?.Value ?? "0")
+            };
         }
-        catch (Exception ex)
-        {
-            return BadRequest(new { success = false, message = ex.Message });
-        }
-    }
 
-    // 6. REGISTRAR ABONO (Tu método original actualizado)
-    [HttpPost("RegistrarAbono/{clienteId}")]
-    public IActionResult Post([FromBody] AbonoDTO abono, int clienteId)
-    {
-        try
-        {
-            _abonoService.RegistrarAbono(abono, clienteId);
-            return Ok(new { success = true, message = "Abono procesado correctamente." });
-        }
-        catch (Exception ex)
-        {
-            return BadRequest(new { success = false, message = ex.Message });
-        }
+        return new UsuarioDTO { Id = 3, RolId = 1, SucursalId = 1 };
     }
 }

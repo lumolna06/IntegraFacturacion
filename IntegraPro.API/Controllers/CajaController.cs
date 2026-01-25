@@ -1,56 +1,47 @@
 ﻿using Microsoft.AspNetCore.Mvc;
-using IntegraPro.AppLogic.Services;
+using IntegraPro.AppLogic.Interfaces;
 using IntegraPro.DTO.Models;
 
 namespace IntegraPro.API.Controllers;
 
 [Route("api/[controller]")]
 [ApiController]
-// Cambiamos el constructor para inyectar el CajaService directamente
-public class CajaController(CajaService cajaService) : ControllerBase
+public class CajaController(ICajaService service) : ControllerBase
 {
-    // Ya no usamos IConfiguration ni 'new', el sistema nos da el servicio listo
-    private readonly CajaService _cajaService = cajaService;
+    private readonly ICajaService _service = service;
 
-    [HttpPost("Abrir")]
+    [HttpPost("abrir")]
     public IActionResult Abrir([FromBody] CajaAperturaDTO apertura)
     {
-        try
-        {
-            int id = _cajaService.AbrirCaja(apertura);
-            return Ok(new { success = true, cajaId = id, message = "Caja abierta correctamente." });
-        }
-        catch (Exception ex)
-        {
-            return BadRequest(new { success = false, message = ex.Message });
-        }
+        var res = _service.AbrirCaja(apertura, ObtenerEjecutor());
+        return res.Result ? Ok(res) : BadRequest(res);
     }
 
-    [HttpPost("Cerrar")]
+    [HttpPost("cerrar")]
     public IActionResult Cerrar([FromBody] CajaCierreDTO cierre)
     {
-        try
-        {
-            _cajaService.CerrarCaja(cierre);
-            return Ok(new { success = true, message = "Caja cerrada y liquidada exitosamente." });
-        }
-        catch (Exception ex)
-        {
-            return BadRequest(new { success = false, message = ex.Message });
-        }
+        var res = _service.CerrarCaja(cierre, ObtenerEjecutor());
+        return res.Result ? Ok(res) : BadRequest(res);
     }
 
-    [HttpGet("Historial")]
+    [HttpGet("historial")]
     public IActionResult GetHistorial()
     {
-        try
+        var res = _service.ObtenerHistorial(ObtenerEjecutor());
+        return res.Result ? Ok(res) : BadRequest(res);
+    }
+
+    private UsuarioDTO ObtenerEjecutor()
+    {
+        if (User.Identity?.IsAuthenticated == true)
         {
-            var historial = _cajaService.ObtenerHistorial();
-            return Ok(new { success = true, data = historial });
+            return new UsuarioDTO
+            {
+                Id = int.Parse(User.FindFirst("id")?.Value ?? "0"),
+                RolId = int.Parse(User.FindFirst("rolId")?.Value ?? "0"),
+                SucursalId = int.Parse(User.FindFirst("sucursalId")?.Value ?? "0")
+            };
         }
-        catch (Exception ex)
-        {
-            return BadRequest(new { success = false, message = ex.Message });
-        }
+        return new UsuarioDTO { Id = 3, RolId = 1, SucursalId = 1 };
     }
 }

@@ -6,12 +6,10 @@ using System.Data;
 
 namespace IntegraPro.DataAccess.Factory;
 
-public class ConfiguracionFactory : MasterDao
+public class ConfiguracionFactory(string connectionString) : MasterDao(connectionString)
 {
-    public ConfiguracionFactory(string connectionString) : base(connectionString) { }
-
     /// <summary>
-    /// Obtiene todos los datos comerciales de la empresa de la tabla EMPRESA.
+    /// Obtiene todos los datos comerciales de la empresa e indicadores de configuración. 
     /// </summary>
     public EmpresaDTO? ObtenerEmpresa()
     {
@@ -24,12 +22,13 @@ public class ConfiguracionFactory : MasterDao
                         telefono, 
                         correo_notificaciones, 
                         sitio_web, 
-                        logo 
+                        logo,
+                        permitir_stock_negativo
                        FROM EMPRESA";
 
         DataTable dt = ExecuteQuery(sql, null, false);
 
-        if (dt.Rows.Count == 0) return null;
+        if (dt == null || dt.Rows.Count == 0) return null;
 
         DataRow row = dt.Rows[0];
         return new EmpresaDTO
@@ -42,16 +41,21 @@ public class ConfiguracionFactory : MasterDao
             Telefono = row["telefono"]?.ToString() ?? string.Empty,
             CorreoNotificaciones = row["correo_notificaciones"]?.ToString() ?? string.Empty,
             SitioWeb = row["sitio_web"]?.ToString() ?? string.Empty,
-            Logo = row["logo"]?.ToString()
+            Logo = row["logo"]?.ToString(),
+            PermitirStockNegativo = row["permitir_stock_negativo"] != DBNull.Value && Convert.ToBoolean(row["permitir_stock_negativo"])
         };
     }
 
     /// <summary>
-    /// Guarda o actualiza los datos comerciales de la empresa con validación anti-basura.
+    /// Guarda o actualiza con lógica anti-basura. Solo permitido para roles con permiso 'config'.
     /// </summary>
-    public void GuardarEmpresa(EmpresaDTO empresa)
+    public void GuardarEmpresa(EmpresaDTO empresa, UsuarioDTO ejecutor)
     {
-        // Lógica de protección: Solo actualiza si el valor no es nulo, no está vacío y no es "string"
+        // 1. VALIDACIÓN DE SEGURIDAD
+        if (!ejecutor.TienePermiso("config") || ejecutor.TienePermiso("solo_lectura"))
+            throw new UnauthorizedAccessException("No tiene permisos para modificar la configuración global del sistema.");
+
+        // 2. Lógica de protección: Solo actualiza si el valor no es nulo/vacío para textos, y actualiza el bit de stock.
         string sql = @"
             UPDATE EMPRESA SET 
                 nombre_comercial = CASE WHEN ISNULL(@nom, '') NOT IN ('', 'string') THEN @nom ELSE nombre_comercial END,
@@ -60,34 +64,38 @@ public class ConfiguracionFactory : MasterDao
                 tipo_regimen = CASE WHEN ISNULL(@reg, '') NOT IN ('', 'string') THEN @reg ELSE tipo_regimen END,
                 telefono = CASE WHEN ISNULL(@tel, '') NOT IN ('', 'string') THEN @tel ELSE telefono END,
                 correo_notificaciones = CASE WHEN ISNULL(@cor, '') NOT IN ('', 'string') THEN @cor ELSE correo_notificaciones END,
-                sitio_web = CASE WHEN ISNULL(@sit, '') NOT IN ('', 'string') THEN @sit ELSE sitio_web END
+                sitio_web = CASE WHEN ISNULL(@sit, '') NOT IN ('', 'string') THEN @sit ELSE sitio_web END,
+                permitir_stock_negativo = @stk
             WHERE id = 1;
             
-            -- Si no existe el registro 1, lo insertamos (Upsert manual de seguridad)
             IF @@ROWCOUNT = 0
             BEGIN
-                INSERT INTO EMPRESA (nombre_comercial, razon_social, cedula_juridica, tipo_regimen, telefono, correo_notificaciones, sitio_web)
-                VALUES (@nom, @raz, @ced, @reg, @tel, @cor, @sit)
+                INSERT INTO EMPRESA (nombre_comercial, razon_social, cedula_juridica, tipo_regimen, telefono, correo_notificaciones, sitio_web, permitir_stock_negativo)
+                VALUES (@nom, @raz, @ced, @reg, @tel, @cor, @sit, @stk)
             END";
 
         var p = new SqlParameter[] {
-            new SqlParameter("@nom", (object)empresa.NombreComercial ?? DBNull.Value),
-            new SqlParameter("@raz", (object)empresa.RazonSocial ?? DBNull.Value),
-            new SqlParameter("@ced", (object)empresa.CedulaJuridica ?? DBNull.Value),
-            new SqlParameter("@reg", (object)empresa.TipoRegimen ?? DBNull.Value),
-            new SqlParameter("@tel", (object)empresa.Telefono ?? DBNull.Value),
-            new SqlParameter("@cor", (object)empresa.CorreoNotificaciones ?? DBNull.Value),
-            new SqlParameter("@sit", (object)empresa.SitioWeb ?? DBNull.Value)
+            new SqlParameter("@nom", (object?)empresa.NombreComercial ?? DBNull.Value),
+            new SqlParameter("@raz", (object?)empresa.RazonSocial ?? DBNull.Value),
+            new SqlParameter("@ced", (object?)empresa.CedulaJuridica ?? DBNull.Value),
+            new SqlParameter("@reg", (object?)empresa.TipoRegimen ?? DBNull.Value),
+            new SqlParameter("@tel", (object?)empresa.Telefono ?? DBNull.Value),
+            new SqlParameter("@cor", (object?)empresa.CorreoNotificaciones ?? DBNull.Value),
+            new SqlParameter("@sit", (object?)empresa.SitioWeb ?? DBNull.Value),
+            new SqlParameter("@stk", empresa.PermitirStockNegativo)
         };
 
         ExecuteNonQuery(sql, p, false);
     }
 
     /// <summary>
-    /// Registra la licencia inicial en la base de datos.
+    /// Registra la licencia inicial. Requiere permisos de configuración.
     /// </summary>
-    public void RegistrarConfiguracionInicial(string nombreEmpresa, string ruc, int maxEquipos, string hid)
+    public void RegistrarConfiguracionInicial(string nombreEmpresa, string ruc, int maxEquipos, string hid, UsuarioDTO ejecutor)
     {
+        if (!ejecutor.TienePermiso("config"))
+            throw new UnauthorizedAccessException("Acción denegada para el registro de licencia.");
+
         var parameters = new SqlParameter[] {
             new SqlParameter("@nombre_empresa", nombreEmpresa),
             new SqlParameter("@ruc", ruc),
@@ -99,7 +107,7 @@ public class ConfiguracionFactory : MasterDao
     }
 
     /// <summary>
-    /// Valida el hardware ID contra la licencia.
+    /// Valida el hardware ID contra la licencia. No requiere 'ejecutor' ya que ocurre antes del login.
     /// </summary>
     public DataTable ValidarLicenciaMultiEquipo(string hardwareId)
     {
@@ -115,7 +123,7 @@ public class ConfiguracionFactory : MasterDao
         var p = new SqlParameter[] { new SqlParameter("@hardware_id", hardwareId) };
         var dt = ExecuteQuery("sp_Licencia_Validar", p);
 
-        if (dt.Rows.Count == 0) return null;
+        if (dt == null || dt.Rows.Count == 0) return null;
 
         var row = dt.Rows[0];
         return new LicenciaDTO

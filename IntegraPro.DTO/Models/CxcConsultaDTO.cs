@@ -2,7 +2,7 @@
 
 public class CxcConsultaDTO
 {
-    public int FacturaId { get; set; }
+    public int CuentaCobrarId { get; set; }
     public string NumeroFactura { get; set; } = string.Empty;
     public string ClienteNombre { get; set; } = string.Empty;
     public string ClienteCedula { get; set; } = string.Empty;

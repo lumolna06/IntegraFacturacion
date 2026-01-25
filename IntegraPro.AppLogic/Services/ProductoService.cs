@@ -7,40 +7,96 @@ namespace IntegraPro.AppLogic.Services;
 
 public class ProductoService(ProductoFactory factory) : IProductoService
 {
-    public ApiResponse<List<ProductoDTO>> ObtenerTodos() =>
-        new(true, "Productos obtenidos", factory.GetAll());
+    private readonly ProductoFactory _factory = factory;
 
-    public ApiResponse<ProductoDTO> ObtenerPorId(int id)
-    {
-        var prod = factory.GetById(id);
-        return new ApiResponse<ProductoDTO>(prod != null, prod != null ? "Encontrado" : "No existe", prod!);
-    }
-
-    public ApiResponse<bool> Crear(ProductoDTO producto)
+    public ApiResponse<List<ProductoDTO>> ObtenerTodos(UsuarioDTO ejecutor)
     {
         try
         {
-            int nuevoId = factory.Create(producto);
+            var productos = _factory.GetAll(ejecutor);
+            return new ApiResponse<List<ProductoDTO>>(true, "Productos obtenidos", productos);
+        }
+        catch (Exception ex)
+        {
+            return new ApiResponse<List<ProductoDTO>>(false, $"Error al obtener productos: {ex.Message}");
+        }
+    }
+
+    public ApiResponse<ProductoDTO> ObtenerPorId(int id, UsuarioDTO ejecutor)
+    {
+        try
+        {
+            var prod = _factory.GetById(id, ejecutor);
+            return new ApiResponse<ProductoDTO>(prod != null, prod != null ? "Encontrado" : "No existe o no tiene acceso", prod);
+        }
+        catch (Exception ex)
+        {
+            return new ApiResponse<ProductoDTO>(false, ex.Message);
+        }
+    }
+
+    public ApiResponse<bool> Crear(ProductoDTO producto, UsuarioDTO ejecutor)
+    {
+        try
+        {
+            // Validaciones básicas de negocio
+            if (string.IsNullOrWhiteSpace(producto.Nombre))
+                return new ApiResponse<bool>(false, "El nombre del producto es obligatorio.", false);
+
+            // El Factory se encarga de validar 'solo_lectura' y 'sucursal_limit'
+            int nuevoId = _factory.Create(producto, ejecutor);
+
+            // Si es un producto elaborado (combo o receta), insertamos su composición
             if (producto.EsElaborado && producto.Receta != null)
             {
                 foreach (var item in producto.Receta)
-                    factory.InsertarComposicion(nuevoId, item.MaterialId, item.CantidadNecesaria);
+                {
+                    _factory.InsertarComposicion(nuevoId, item.MaterialId, item.CantidadNecesaria, ejecutor);
+                }
             }
+
             return new ApiResponse<bool>(true, "Creado exitosamente", true);
         }
-        catch (Exception ex) { return new ApiResponse<bool>(false, ex.Message, false); }
+        catch (UnauthorizedAccessException ex)
+        {
+            return new ApiResponse<bool>(false, ex.Message, false);
+        }
+        catch (Exception ex)
+        {
+            return new ApiResponse<bool>(false, $"Error al crear producto: {ex.Message}", false);
+        }
     }
 
-    public ApiResponse<bool> Actualizar(ProductoDTO producto)
+    public ApiResponse<bool> Actualizar(ProductoDTO producto, UsuarioDTO ejecutor)
     {
         try
         {
-            factory.Update(producto);
+            if (producto.Id <= 0)
+                return new ApiResponse<bool>(false, "ID de producto no válido.", false);
+
+            _factory.Update(producto, ejecutor);
             return new ApiResponse<bool>(true, "Actualizado exitosamente", true);
         }
-        catch (Exception ex) { return new ApiResponse<bool>(false, ex.Message, false); }
+        catch (UnauthorizedAccessException ex)
+        {
+            return new ApiResponse<bool>(false, ex.Message, false);
+        }
+        catch (Exception ex)
+        {
+            return new ApiResponse<bool>(false, $"Error al actualizar: {ex.Message}", false);
+        }
     }
 
-    public ApiResponse<List<ProductoDTO>> ObtenerAlertasStock() =>
-        new(true, "Alertas de stock", factory.GetStockAlerts());
+    public ApiResponse<List<ProductoDTO>> ObtenerAlertasStock(UsuarioDTO ejecutor)
+    {
+        try
+        {
+            var alertas = _factory.GetStockAlerts(ejecutor);
+            return new ApiResponse<List<ProductoDTO>>(true, "Alertas de stock obtenidas", alertas);
+        }
+        catch (Exception ex)
+        {
+            return new ApiResponse<List<ProductoDTO>>(false, ex.Message);
+        }
+    }
 }

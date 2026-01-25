@@ -2,69 +2,95 @@
 using IntegraPro.DTO.Models;
 using Microsoft.Data.SqlClient;
 using System;
+using System.Collections.Generic;
 using System.Data;
 
 namespace IntegraPro.DataAccess.Factory;
 
 public class EmpresaFactory(string connectionString) : MasterDao(connectionString)
 {
-    public EmpresaDTO ObtenerConfiguracion()
+    /// <summary>
+    /// Obtiene la configuración global de la empresa. 
+    /// Este método suele ser público para reportes y facturación.
+    /// </summary>
+    public EmpresaDTO? ObtenerConfiguracion()
     {
         string sql = @"SELECT TOP 1 id, nombre_comercial, cedula_juridica, 
-                              correo_notificaciones, tipo_regimen 
+                                correo_notificaciones, tipo_regimen 
                        FROM EMPRESA";
 
         var dt = ExecuteQuery(sql, null, false);
 
-        if (dt.Rows.Count == 0) return null;
+        if (dt == null || dt.Rows.Count == 0) return null;
 
         DataRow r = dt.Rows[0];
         return new EmpresaDTO
         {
             Id = Convert.ToInt32(r["id"]),
-            NombreComercial = r["nombre_comercial"].ToString() ?? "",
-            CedulaJuridica = r["cedula_juridica"].ToString() ?? "",
-            CorreoNotificaciones = r["correo_notificaciones"].ToString() ?? "",
+            NombreComercial = r["nombre_comercial"]?.ToString() ?? "",
+            CedulaJuridica = r["cedula_juridica"]?.ToString() ?? "",
+            CorreoNotificaciones = r["correo_notificaciones"]?.ToString() ?? "",
             TipoRegimen = r["tipo_regimen"]?.ToString() ?? "Tradicional"
         };
     }
 
-    public int RegistrarEmpresa(EmpresaDTO e)
+    /// <summary>
+    /// Alias para compatibilidad con VentaService
+    /// </summary>
+    public EmpresaDTO? ObtenerEmpresa() => ObtenerConfiguracion();
+
+    /// <summary>
+    /// Registra la empresa por primera vez. Valida que el ejecutor tenga permiso "config".
+    /// </summary>
+    public int RegistrarEmpresa(EmpresaDTO e, UsuarioDTO ejecutor)
     {
+        // 1. VALIDACIÓN DE SEGURIDAD (Solo Rol 1 o similar con permiso "config")
+        if (!ejecutor.TienePermiso("config") || ejecutor.TienePermiso("solo_lectura"))
+            throw new UnauthorizedAccessException("No tiene privilegios para registrar la configuración de la empresa.");
+
+        // 2. VALIDACIÓN DE EXISTENCIA PREVIA
         string sqlCheck = "SELECT COUNT(*) FROM EMPRESA";
-        var count = (int)ExecuteScalar(sqlCheck, null, false);
+        var count = Convert.ToInt32(ExecuteScalar(sqlCheck, null, false));
 
         if (count > 0)
-            throw new Exception("Ya existe una empresa registrada.");
+            throw new Exception("Ya existe una empresa registrada. Use Actualizar para modificar los datos.");
 
         string sql = @"INSERT INTO EMPRESA (nombre_comercial, cedula_juridica, correo_notificaciones, tipo_regimen)
                         VALUES (@nom, @ced, @cor, @reg);
-                        SELECT SCOPE_IDENTITY();";
+                        SELECT CAST(SCOPE_IDENTITY() as int);";
 
         var p = new[] {
             new SqlParameter("@nom", e.NombreComercial),
             new SqlParameter("@ced", e.CedulaJuridica),
-            new SqlParameter("@cor", e.CorreoNotificaciones),
-            new SqlParameter("@reg", e.TipoRegimen)
+            new SqlParameter("@cor", (object?)e.CorreoNotificaciones ?? DBNull.Value),
+            new SqlParameter("@reg", (object?)e.TipoRegimen ?? "Tradicional")
         };
 
-        object result = ExecuteScalar(sql, p, false);
-        return Convert.ToInt32(result);
+        return Convert.ToInt32(ExecuteScalar(sql, p, false));
     }
 
-    public void ActualizarEmpresa(EmpresaDTO e)
+    /// <summary>
+    /// Actualiza los datos maestros. Valida permisos de configuración.
+    /// </summary>
+    public void ActualizarEmpresa(EmpresaDTO e, UsuarioDTO ejecutor)
     {
+        // 1. VALIDACIÓN DE SEGURIDAD
+        if (!ejecutor.TienePermiso("config") || ejecutor.TienePermiso("solo_lectura"))
+            throw new UnauthorizedAccessException("Acceso denegado: No tiene permisos para modificar la configuración global.");
+
         string sql = @"UPDATE EMPRESA SET 
-                        nombre_comercial = @nom, cedula_juridica = @ced,
-                        correo_notificaciones = @cor, tipo_regimen = @reg
+                        nombre_comercial = @nom, 
+                        cedula_juridica = @ced,
+                        correo_notificaciones = @cor, 
+                        tipo_regimen = @reg
                        WHERE id = @id";
 
         var p = new[] {
             new SqlParameter("@id", e.Id),
             new SqlParameter("@nom", e.NombreComercial),
             new SqlParameter("@ced", e.CedulaJuridica),
-            new SqlParameter("@cor", e.CorreoNotificaciones),
-            new SqlParameter("@reg", e.TipoRegimen)
+            new SqlParameter("@cor", (object?)e.CorreoNotificaciones ?? DBNull.Value),
+            new SqlParameter("@reg", (object?)e.TipoRegimen ?? "Tradicional")
         };
 
         ExecuteNonQuery(sql, p, false);

@@ -5,6 +5,7 @@ using QuestPDF.Fluent;
 using QuestPDF.Infrastructure;
 using IntegraPro.API.Reports;
 using System.Data;
+using System.Security.Claims;
 
 namespace IntegraPro.API.Controllers;
 
@@ -15,32 +16,23 @@ public class VentaController(VentaService service) : ControllerBase
     private readonly VentaService _service = service;
 
     [HttpPost]
-    public async Task<IActionResult> Post([FromBody] FacturaDTO factura)
+    public IActionResult Post([FromBody] FacturaDTO factura)
     {
         try
         {
-            try
-            {
-                factura.EstadoHacienda = "ACEPTADO";
-                factura.EsOffline = false;
-            }
-            catch (Exception)
-            {
-                factura.EstadoHacienda = "PENDIENTE";
-                factura.EsOffline = true;
-            }
+            // Simulación de validación con Hacienda
+            factura.EstadoHacienda = "ACEPTADO";
+            factura.EsOffline = false;
 
-            string numFac = _service.ProcesarVenta(factura);
+            // Se pasa el ejecutor al método ProcesarVenta
+            string numFac = _service.ProcesarVenta(factura, ObtenerEjecutor());
 
             return Ok(new
             {
                 success = true,
                 factura = numFac,
                 estado = factura.EstadoHacienda,
-                offline = factura.EsOffline,
-                message = factura.EsOffline
-                    ? "Venta guardada LOCALMENTE (Hacienda fuera de línea). Se enviará luego."
-                    : "Venta procesada y aceptada por Hacienda."
+                message = "Venta procesada y aceptada por Hacienda."
             });
         }
         catch (Exception ex)
@@ -54,18 +46,26 @@ public class VentaController(VentaService service) : ControllerBase
         [FromQuery] DateTime? desde,
         [FromQuery] DateTime? hasta,
         [FromQuery] int? clienteId,
-        [FromQuery] int? sucursalId,
         [FromQuery] string buscar = "",
-        [FromQuery] string? condicion = "") // NUEVO PARÁMETRO
+        [FromQuery] string? condicion = "")
     {
         try
         {
-            // Pasamos 'condicion' al service (que ya lo espera tras la modificación anterior)
-            DataTable dt = _service.ObtenerReporteVentas(desde, hasta, clienteId, sucursalId, buscar, condicion);
+            // Aseguramos que las fechas no sean nulas para el Service
+            DateTime fechaInicio = desde ?? DateTime.Now.AddMonths(-1);
+            DateTime fechaFin = hasta ?? DateTime.Now;
+
+            // LLAMADA CORREGIDA: Ahora coincide con los 6 parámetros del Service
+            DataTable dt = _service.ObtenerReporteVentas(
+                fechaInicio,
+                fechaFin,
+                clienteId,
+                buscar ?? "",
+                condicion ?? "",
+                ObtenerEjecutor()
+            );
 
             decimal sumaTotales = 0;
-
-            // Convertimos el DataTable a una lista de diccionarios para evitar el error de serialización
             var filas = new List<Dictionary<string, object>>();
 
             foreach (DataRow row in dt.Rows)
@@ -78,8 +78,8 @@ public class VentaController(VentaService service) : ControllerBase
 
                 filas.Add(diccionario);
 
-                // Sumatoria para el resumen
-                if (row["total_comprobante"] != DBNull.Value)
+                // Validamos que la columna exista antes de sumar
+                if (dt.Columns.Contains("total_comprobante") && row["total_comprobante"] != DBNull.Value)
                     sumaTotales += Convert.ToDecimal(row["total_comprobante"]);
             }
 
@@ -102,9 +102,11 @@ public class VentaController(VentaService service) : ControllerBase
     {
         try
         {
-            var factura = _service.ObtenerFacturaParaImpresion(id);
+            // Se pasa el ejecutor para validar si tiene permiso de ver esta factura
+            var factura = _service.ObtenerFacturaParaImpresion(id, ObtenerEjecutor());
+
             if (factura == null)
-                return NotFound(new { success = false, message = "La factura no existe." });
+                return NotFound(new { success = false, message = "La factura no existe o no tiene permisos para verla." });
 
             var empresa = _service.ObtenerEmpresa();
 
@@ -119,5 +121,26 @@ public class VentaController(VentaService service) : ControllerBase
         {
             return BadRequest(new { success = false, message = "Error al generar PDF: " + ex.Message });
         }
+    }
+
+    /// <summary>
+    /// Obtiene el usuario autenticado desde el Token JWT.
+    /// </summary>
+    private UsuarioDTO ObtenerEjecutor()
+    {
+        // Se recomienda usar nombres de claims estándar o los definidos en tu Login
+        if (User.Identity?.IsAuthenticated == true)
+        {
+            return new UsuarioDTO
+            {
+                Id = int.Parse(User.FindFirst("id")?.Value ?? User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "0"),
+                RolId = int.Parse(User.FindFirst("rolId")?.Value ?? "0"),
+                SucursalId = int.Parse(User.FindFirst("sucursalId")?.Value ?? "0"),
+                Username = User.Identity.Name ?? ""
+            };
+        }
+
+        // Usuario por defecto solo para desarrollo
+        return new UsuarioDTO { Id = 1, RolId = 1, SucursalId = 1, Username = "DevUser" };
     }
 }

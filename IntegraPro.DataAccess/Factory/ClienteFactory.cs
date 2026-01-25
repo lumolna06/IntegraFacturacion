@@ -29,8 +29,12 @@ public class ClienteFactory(string connectionString) : MasterDao(connectionStrin
         return lista;
     }
 
-    public int Insertar(ClienteDTO cliente)
+    public int Insertar(ClienteDTO cliente, UsuarioDTO ejecutor)
     {
+        // Validación de Rol: Solo lectura no puede crear clientes
+        if (ejecutor.TienePermiso("solo_lectura"))
+            throw new UnauthorizedAccessException("Acceso denegado: Su rol es de solo lectura.");
+
         string sql = @"INSERT INTO CLIENTE (identificacion, nombre, correo, telefono, limite_credito, activo) 
                        VALUES (@ident, @nomb, @corr, @tele, @limi, @acti);
                        SELECT CAST(SCOPE_IDENTITY() as int) AS NuevoID;";
@@ -45,30 +49,45 @@ public class ClienteFactory(string connectionString) : MasterDao(connectionStrin
         };
 
         var dt = ExecuteQuery(sql, p, false);
-
         return dt.Rows.Count > 0 ? Convert.ToInt32(dt.Rows[0][0]) : 0;
     }
 
-    public bool Actualizar(ClienteDTO cliente)
+    public bool Actualizar(ClienteDTO cliente, UsuarioDTO ejecutor)
     {
+        // 1. Validación de Rol
+        if (ejecutor.TienePermiso("solo_lectura"))
+            throw new UnauthorizedAccessException("Acceso denegado: El usuario no tiene permisos de modificación.");
+
+        // 2. SQL con lógica de protección de datos (CASE WHEN)
+        // Solo actualiza si el valor enviado NO es "string", no es nulo y no está vacío.
         string sql = @"UPDATE CLIENTE SET 
-                        identificacion = @ident, 
-                        nombre = @nomb, 
-                        correo = @corr, 
-                        telefono = @tele, 
-                        limite_credito = @limi, 
-                        activo = @acti 
-                       WHERE id = @id";
+                    identificacion = CASE 
+                        WHEN @ident <> 'string' AND ISNULL(@ident, '') <> '' THEN @ident 
+                        ELSE identificacion END, 
+                    nombre = CASE 
+                        WHEN @nomb <> 'string' AND ISNULL(@nomb, '') <> '' THEN @nomb 
+                        ELSE nombre END, 
+                    correo = CASE 
+                        WHEN @corr <> 'string' AND ISNULL(@corr, '') <> '' THEN @corr 
+                        ELSE correo END, 
+                    telefono = CASE 
+                        WHEN @tele <> 'string' AND ISNULL(@tele, '') <> '' THEN @tele 
+                        ELSE telefono END, 
+                    limite_credito = CASE 
+                        WHEN @limi > 0 THEN @limi 
+                        ELSE limite_credito END, 
+                    activo = @acti 
+                   WHERE id = @id";
 
         var p = new[] {
-            new SqlParameter("@id", cliente.Id),
-            new SqlParameter("@ident", cliente.Identificacion),
-            new SqlParameter("@nomb", cliente.Nombre),
-            new SqlParameter("@corr", (object?)cliente.Correo ?? DBNull.Value),
-            new SqlParameter("@tele", (object?)cliente.Telefono ?? DBNull.Value),
-            new SqlParameter("@limi", cliente.LimiteCredito),
-            new SqlParameter("@acti", cliente.Activo)
-        };
+        new SqlParameter("@id", cliente.Id),
+        new SqlParameter("@ident", (object?)cliente.Identificacion ?? DBNull.Value),
+        new SqlParameter("@nomb", (object?)cliente.Nombre ?? DBNull.Value),
+        new SqlParameter("@corr", (object?)cliente.Correo ?? DBNull.Value),
+        new SqlParameter("@tele", (object?)cliente.Telefono ?? DBNull.Value),
+        new SqlParameter("@limi", cliente.LimiteCredito),
+        new SqlParameter("@acti", cliente.Activo)
+    };
 
         ExecuteNonQuery(sql, p, false);
         return true;
@@ -90,17 +109,13 @@ public class ClienteFactory(string connectionString) : MasterDao(connectionStrin
         return (0, 0, false);
     }
 
-    // --- NUEVO MÉTODO PARA VALIDACIÓN DE CRÉDITO ---
     public void ActualizarSaldo(int clienteId, decimal monto)
     {
-        // Suma el monto de la nueva factura al saldo_pendiente actual del cliente
         string sql = "UPDATE CLIENTE SET saldo_pendiente = ISNULL(saldo_pendiente, 0) + @monto WHERE id = @id";
-
         var p = new[] {
             new SqlParameter("@monto", monto),
             new SqlParameter("@id", clienteId)
         };
-
         ExecuteNonQuery(sql, p, false);
     }
 
@@ -112,23 +127,15 @@ public class ClienteFactory(string connectionString) : MasterDao(connectionStrin
         if (dt == null || dt.Rows.Count == 0) return null;
 
         var row = dt.Rows[0];
-
         return new ClienteDTO
         {
             Id = Convert.ToInt32(row["id"]),
             Identificacion = row["identificacion"].ToString(),
             Nombre = row["nombre"].ToString(),
             Correo = row["correo"].ToString(),
-
-            // ASIGNACIONES FALTANTES:
-            // Verificamos si es nulo en DB para evitar excepciones
             Telefono = row["telefono"] != DBNull.Value ? row["telefono"].ToString() : "",
-
-            // El nombre de la columna debe ser exacto al de tu tabla (ej: limite_credito)
             LimiteCredito = row["limite_credito"] != DBNull.Value ? Convert.ToDecimal(row["limite_credito"]) : 0,
-
             Activo = row["activo"] != DBNull.Value && Convert.ToBoolean(row["activo"])
         };
     }
-
 }

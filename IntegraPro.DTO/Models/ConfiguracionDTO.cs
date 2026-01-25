@@ -17,6 +17,8 @@ public class EmpresaDTO
     public string CorreoNotificaciones { get; set; } = string.Empty;
     public string SitioWeb { get; set; } = string.Empty; // Agregado
     public string? Logo { get; set; } // Agregado (Nombre del archivo o ruta)
+
+    public bool PermitirStockNegativo { get; set; }
 }
 
 public class LicenciaDTO

@@ -1,25 +1,61 @@
-﻿using IntegraPro.DataAccess.Factory;
+﻿using IntegraPro.AppLogic.Interfaces;
+using IntegraPro.AppLogic.Utils;
+using IntegraPro.DataAccess.Factory;
 using IntegraPro.DTO.Models;
 
 namespace IntegraPro.AppLogic.Services;
 
-// Cambiamos el constructor para recibir el Factory inyectado
-public class CajaService(CajaFactory cajaFactory)
+public class CajaService(CajaFactory factory) : ICajaService
 {
-    private readonly CajaFactory _cajaFactory = cajaFactory;
+    private readonly CajaFactory _factory = factory;
 
-    public int AbrirCaja(CajaAperturaDTO apertura) => _cajaFactory.AbrirCaja(apertura);
-
-    public void CerrarCaja(CajaCierreDTO cierre)
+    public ApiResponse<int> AbrirCaja(CajaAperturaDTO apertura, UsuarioDTO ejecutor)
     {
-        if (cierre.MontoRealEnCaja < 0)
-            throw new Exception("El monto real no puede ser un valor negativo.");
-
-        _cajaFactory.CerrarCaja(cierre);
+        try
+        {
+            // Ahora le pasamos el 'ejecutor' al Factory para que valide el rol
+            int id = _factory.AbrirCaja(apertura, ejecutor);
+            return new ApiResponse<int>(true, "Caja abierta con éxito", id);
+        }
+        catch (UnauthorizedAccessException ex)
+        {
+            return new ApiResponse<int>(false, ex.Message);
+        }
+        catch (Exception ex)
+        {
+            return new ApiResponse<int>(false, $"Error al abrir caja: {ex.Message}");
+        }
     }
 
-    public List<object> ObtenerHistorial()
+    public ApiResponse<bool> CerrarCaja(CajaCierreDTO cierre, UsuarioDTO ejecutor)
     {
-        return _cajaFactory.ObtenerHistorialCierres();
+        try
+        {
+            // Pasamos el 'ejecutor' para asegurar que tenga permisos de cierre
+            _factory.CerrarCaja(cierre, ejecutor);
+            return new ApiResponse<bool>(true, "Caja cerrada correctamente", true);
+        }
+        catch (UnauthorizedAccessException ex)
+        {
+            return new ApiResponse<bool>(false, ex.Message, false);
+        }
+        catch (Exception ex)
+        {
+            return new ApiResponse<bool>(false, ex.Message, false);
+        }
+    }
+
+    public ApiResponse<List<object>> ObtenerHistorial(UsuarioDTO ejecutor)
+    {
+        try
+        {
+            // El Factory usará el 'ejecutor' para filtrar por sucursal automáticamente
+            var historial = _factory.ObtenerHistorialCierres(ejecutor);
+            return new ApiResponse<List<object>>(true, "Historial recuperado", historial);
+        }
+        catch (Exception ex)
+        {
+            return new ApiResponse<List<object>>(false, $"Error: {ex.Message}");
+        }
     }
 }

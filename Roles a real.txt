@@ -1,0 +1,60 @@
+Para que funcione con el Frontend de forma real y deje de usar datos "quemados", no necesitas modificar todos los Factory. Esa es la magia de la arquitectura en capas que hemos construido.
+
+Lo que debes modificar es la Capa de Aplicación (Services y Controllers) para que la identidad "viaje" desde el Token del Frontend hasta el Factory.
+
+Aquí tienes los 3 puntos clave que debes modificar para "encender" el sistema real:
+
+1. El Controlador (El punto de entrada)
+Debes cambiar el método ObtenerEjecutor() en todos tus controladores. Este método es el que "atrapa" el usuario que viene del Frontend.
+
+C#
+private UsuarioDTO ObtenerEjecutor()
+{
+    // Obtiene el ID del usuario del Token JWT enviado por el Frontend
+    var userIdClaim = User.FindFirst("id")?.Value;
+    if (string.IsNullOrEmpty(userIdClaim))
+        throw new UnauthorizedAccessException("Sesión inválida o expirada.");
+
+    // Este DTO viajará hacia abajo (al Service y luego al Factory)
+    return new UsuarioDTO
+    {
+        Id = int.Parse(userIdClaim),
+        SucursalId = int.Parse(User.FindFirst("sucursalId")?.Value ?? "0"),
+        // Mapea los permisos que vienen en el Token
+        Permisos = User.Claims
+            .Where(c => c.Type == "permiso")
+            .ToDictionary(c => c.Value, c => true)
+    };
+}
+2. El Factory (La validación en DB)
+No hay que modificarlos todos, solo asegúrate de que tus Factory importantes (como ProformaFactory, VentaFactory, ConfiguracionFactory) reciban el UsuarioDTO ejecutor en sus métodos, tal como ya lo hicimos con el de Proformas.
+
+¿Por qué? Porque el Factory usa ese ejecutor.Id para auditoría y ejecutor.SucursalId para filtrar los datos que el Frontend puede ver.
+
+3. El Frontend (El envío del Token)
+Para que el Backend reconozca al usuario, tu Frontend (Vue, React, Angular) debe enviar el Token en cada petición.
+
+Si usas Axios, debes configurar un interceptor para que incluya el Header de autorización:
+
+JavaScript
+// Ejemplo en el Frontend
+axios.interceptors.request.use(config => {
+  const token = localStorage.getItem('token'); // Donde guardaste el token al hacer login
+  if (token) {
+    config.headers.Authorization = `Bearer ${token}`;
+  }
+  return config;
+});
+¿Qué pasa con los Factory que no tienen el parámetro ejecutor?
+Si tienes un Factory viejo que solo hace un SELECT * FROM PRODUCTOS, no es obligatorio cambiarlo a menos que quieras:
+
+Saber quién borró un producto (Auditoría).
+
+Que un vendedor solo vea productos de su propia bodega (Multisucursal).
+
+Resumen: ¿Qué modificar ahora mismo?
+En el Backend: Actualiza el ObtenerEjecutor() en los controladores (como vimos arriba).
+
+En el Frontend: Asegúrate de que el login guarde el token y lo envíe.
+
+¿Quieres que te ayude a crear un "BaseController" para que no tengas que pegar el código de ObtenerEjecutor() en cada uno de tus 10 controladores? Eso te ahorraría mucho trabajo y errores.

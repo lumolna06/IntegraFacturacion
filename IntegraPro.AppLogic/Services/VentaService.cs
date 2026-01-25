@@ -1,6 +1,6 @@
 ﻿using IntegraPro.DataAccess.Factory;
 using IntegraPro.DTO.Models;
-using System.Data; // Necesario para manejar el reporte como DataTable
+using System.Data;
 
 namespace IntegraPro.AppLogic.Services;
 
@@ -15,24 +15,32 @@ public class VentaService(
     private readonly ProductoFactory _prodFactory = prodFactory;
     private readonly ConfiguracionFactory _configFactory = configFactory;
 
-    public string ProcesarVenta(FacturaDTO factura)
+    public string ProcesarVenta(FacturaDTO factura, UsuarioDTO ejecutor)
     {
-        // 1. VALIDACIÓN DE STOCK
-        foreach (var det in factura.Detalles)
-        {
-            var producto = _prodFactory.GetById(det.ProductoId);
-            if (producto == null)
-                throw new Exception($"El producto con ID {det.ProductoId} no existe.");
+        // 1. VALIDACIÓN DE STOCK (Considerando configuración de empresa)
+        var empresa = _configFactory.ObtenerEmpresa();
+        bool permitirNegativo = empresa?.PermitirStockNegativo ?? false;
 
-            if (producto.Existencia < det.Cantidad)
+        if (!permitirNegativo)
+        {
+            foreach (var det in factura.Detalles)
             {
-                throw new Exception($"Stock insuficiente para '{producto.Nombre}'. " +
-                                    $"Solicitado: {det.Cantidad:N2}, Disponible: {producto.Existencia:N2}.");
+                // Usamos el ejecutor para asegurar que el producto se busque en su sucursal
+                var producto = _prodFactory.GetById(det.ProductoId, ejecutor);
+
+                if (producto == null)
+                    throw new Exception($"El producto con ID {det.ProductoId} no está disponible en su sucursal.");
+
+                if (producto.Existencia < det.Cantidad)
+                {
+                    throw new Exception($"Stock insuficiente para '{producto.Nombre}'. " +
+                                        $"Solicitado: {det.Cantidad:N2}, Disponible: {producto.Existencia:N2}.");
+                }
             }
         }
 
         // 2. VALIDACIÓN DE CRÉDITO
-        if (factura.CondicionVenta.Equals("Credito", StringComparison.OrdinalIgnoreCase))
+        if (factura.CondicionVenta != null && factura.CondicionVenta.Equals("Credito", StringComparison.OrdinalIgnoreCase))
         {
             var (saldoActual, limite, activo) = _cliFactory.ObtenerEstadoCredito(factura.ClienteId);
             if (!activo) throw new Exception("El cliente seleccionado se encuentra INACTIVO.");
@@ -43,11 +51,11 @@ public class VentaService(
             }
         }
 
-        // 3. EJECUCIÓN
-        string consecutivoGenerado = _ventaFactory.CrearFactura(factura);
+        // 3. EJECUCIÓN (Pasando el ejecutor para auditoría y sucursal_limit)
+        string consecutivoGenerado = _ventaFactory.CrearFactura(factura, ejecutor);
 
         // 4. ACTUALIZAR SALDO (Solo si es Crédito)
-        if (factura.CondicionVenta.Equals("Credito", StringComparison.OrdinalIgnoreCase))
+        if (factura.CondicionVenta != null && factura.CondicionVenta.Equals("Credito", StringComparison.OrdinalIgnoreCase))
         {
             _cliFactory.ActualizarSaldo(factura.ClienteId, factura.TotalComprobante);
         }
@@ -55,22 +63,23 @@ public class VentaService(
         return consecutivoGenerado;
     }
 
-    // ==========================================
-    // MÉTODO PARA REPORTES (ACTUALIZADO CON CONDICIÓN)
-    // ==========================================
-    public DataTable ObtenerReporteVentas(DateTime? desde, DateTime? hasta, int? clienteId, int? sucursalId, string busqueda, string? condicionVenta)
+    /// <summary>
+    /// Obtiene el reporte de ventas aplicando filtros y seguridad de sucursal.
+    /// </summary>
+    public DataTable ObtenerReporteVentas(DateTime? desde, DateTime? hasta, int? clienteId, string busqueda, string? condicionVenta, UsuarioDTO ejecutor)
     {
-        // Ahora pasamos también el parámetro de condición (Contado/Crédito)
-        return _ventaFactory.ObtenerReporteVentas(desde, hasta, clienteId, sucursalId, busqueda, condicionVenta);
+        return _ventaFactory.ObtenerReporteVentas(desde, hasta, clienteId, busqueda, condicionVenta ?? "", ejecutor);
     }
 
-    public FacturaDTO ObtenerFacturaParaImpresion(int id)
+    public FacturaDTO? ObtenerFacturaParaImpresion(int id, UsuarioDTO ejecutor)
     {
-        var factura = _ventaFactory.ObtenerPorId(id);
+        var factura = _ventaFactory.ObtenerPorId(id, ejecutor);
+
         if (factura != null)
         {
             factura.Detalles = _ventaFactory.ListarDetalles(id);
         }
+
         return factura;
     }
 

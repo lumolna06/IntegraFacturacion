@@ -1,77 +1,70 @@
 ﻿using Microsoft.AspNetCore.Mvc;
-using IntegraPro.DataAccess.Factory;
+using IntegraPro.AppLogic.Interfaces; // IMPORTANTE: Usar la interfaz
 using IntegraPro.DTO.Models;
 
 namespace IntegraPro.API.Controllers;
 
 [Route("api/[controller]")]
 [ApiController]
-public class ClienteController(IConfiguration config) : ControllerBase
+// Cambiamos la inyección a la Interfaz IClienteService
+public class ClienteController(IClienteService service) : ControllerBase
 {
-    // Usamos la cadena de conexión configurada en tu appsettings.json
-    private readonly ClienteFactory _factory = new(config.GetConnectionString("DefaultConnection")!);
+    private readonly IClienteService _service = service;
 
     [HttpGet]
     public IActionResult Get()
     {
-        try
-        {
-            return Ok(_factory.ObtenerTodos());
-        }
-        catch (Exception ex)
-        {
-            return BadRequest(ex.Message);
-        }
+        // Pasamos ObtenerEjecutor() para cumplir con la nueva firma del Service
+        var response = _service.ObtenerTodos(ObtenerEjecutor());
+        return response.Result ? Ok(response) : BadRequest(response);
     }
 
     [HttpPost]
     public IActionResult Post([FromBody] ClienteDTO cliente)
     {
-        try
-        {
-            int id = _factory.Insertar(cliente);
-            return Ok(new { success = true, idCreated = id, message = "Cliente guardado." });
-        }
-        catch (Exception ex)
-        {
-            // Útil para detectar si la identificación ya existe (Unique Constraint)
-            return BadRequest(new { success = false, message = "Error: " + ex.Message });
-        }
+        // Cambiamos .Guardar por .Crear (nombre en la Interfaz)
+        var response = _service.Crear(cliente, ObtenerEjecutor());
+
+        if (response.Result)
+            return Ok(new { success = true, idCreated = response.Data, message = response.Message });
+
+        return BadRequest(new { success = false, message = response.Message });
     }
 
     [HttpPut]
     public IActionResult Put([FromBody] ClienteDTO cliente)
     {
-        try
-        {
-            _factory.Actualizar(cliente);
-            return Ok(new { success = true, message = "Cliente actualizado." });
-        }
-        catch (Exception ex)
-        {
-            return BadRequest(new { success = false, message = ex.Message });
-        }
+        var response = _service.Actualizar(cliente, ObtenerEjecutor());
+
+        if (response.Result)
+            return Ok(new { success = true, message = response.Message });
+
+        return BadRequest(new { success = false, message = response.Message });
     }
 
-    // ==========================================
-    // NUEVO: BUSCAR CLIENTE POR IDENTIFICACIÓN
-    // ==========================================
     [HttpGet("buscar/{identificacion}")]
     public IActionResult GetByIdentificacion(string identificacion)
     {
-        try
-        {
-            // Este método debe existir en tu ClienteFactory
-            var cliente = _factory.ObtenerPorIdentificacion(identificacion);
+        var response = _service.BuscarPorIdentificacion(identificacion);
 
-            if (cliente == null)
-                return NotFound(new { success = false, message = "No se encontró un cliente con esa identificación." });
+        if (!response.Result)
+            return NotFound(new { success = false, message = response.Message });
 
-            return Ok(new { success = true, data = cliente });
-        }
-        catch (Exception ex)
+        return Ok(new { success = true, data = response.Data });
+    }
+
+    private UsuarioDTO ObtenerEjecutor()
+    {
+        if (User.Identity?.IsAuthenticated == true)
         {
-            return BadRequest(new { success = false, message = ex.Message });
+            return new UsuarioDTO
+            {
+                Id = int.Parse(User.FindFirst("id")?.Value ?? "0"),
+                RolId = int.Parse(User.FindFirst("rolId")?.Value ?? "0"),
+                SucursalId = int.Parse(User.FindFirst("sucursalId")?.Value ?? "0")
+            };
         }
+
+        return new UsuarioDTO { Id = 1, RolId = 1, SucursalId = 1 };
     }
 }

@@ -17,8 +17,6 @@ public class UsuarioMapper : IMapper<UsuarioDTO>
             SucursalId = columns.Contains("sucursal_id") ? Convert.ToInt32(row["sucursal_id"]) : 0,
             NombreCompleto = columns.Contains("nombre_completo") ? row["nombre_completo"]?.ToString() ?? "" : "",
             Username = columns.Contains("username") ? row["username"]?.ToString() ?? "" : "",
-
-            // Aquí estaba el error: Validación de existencia para el Hash
             PasswordHash = columns.Contains("password_hash") ? row["password_hash"]?.ToString() ?? "" : "",
 
             CorreoElectronico = columns.Contains("correo_electronico") && row["correo_electronico"] != DBNull.Value
@@ -50,7 +48,7 @@ public class UsuarioMapper : IMapper<UsuarioDTO>
             new SqlParameter("@nombre_completo", entity.NombreCompleto ?? (object)DBNull.Value),
             new SqlParameter("@username", entity.Username ?? (object)DBNull.Value),
             new SqlParameter("@password_hash", entity.PasswordHash ?? (object)DBNull.Value),
-            new SqlParameter("@correo_electronico", entity.CorreoElectronico ?? (object)DBNull.Value), // Añadido para INSERT/UPDATE
+            new SqlParameter("@correo_electronico", entity.CorreoElectronico ?? (object)DBNull.Value),
             new SqlParameter("@activo", entity.Activo),
             new SqlParameter("@hardware_id_sesion", (object?)entity.HardwareIdSesion ?? DBNull.Value)
         };

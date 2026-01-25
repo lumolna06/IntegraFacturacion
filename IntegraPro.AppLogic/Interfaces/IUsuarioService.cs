@@ -6,14 +6,10 @@ namespace IntegraPro.AppLogic.Interfaces;
 public interface IUsuarioService
 {
     ApiResponse<UsuarioDTO> Login(string username, string password);
-    ApiResponse<bool> Registrar(UsuarioDTO usuario);
+    ApiResponse<bool> Registrar(UsuarioDTO usuario, UsuarioDTO ejecutor);
     ApiResponse<bool> Logout(int usuarioId);
     ApiResponse<bool> ForzarCierreSesion(string username, string password);
-
-    // ==========================================
-    // MÉTODOS DE ADMINISTRACIÓN DE ROLES/USUARIOS
-    // ==========================================
-    ApiResponse<List<UsuarioDTO>> ObtenerTodos();
-    ApiResponse<bool> ActualizarRol(int usuarioId, int nuevoRolId);
-    ApiResponse<List<RolDTO>> ListarRolesDisponibles();
+    ApiResponse<List<UsuarioDTO>> ObtenerTodos(UsuarioDTO ejecutor);
+    ApiResponse<bool> ActualizarRol(int usuarioId, int nuevoRolId, UsuarioDTO ejecutor);
+    ApiResponse<List<RolDTO>> ListarRolesDisponibles(UsuarioDTO ejecutor);
 }

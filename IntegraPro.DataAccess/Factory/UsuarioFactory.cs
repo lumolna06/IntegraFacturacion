@@ -1,4 +1,6 @@
-﻿using System.Data;
+﻿using System;
+using System.Collections.Generic;
+using System.Data;
 using IntegraPro.DataAccess.Dao;
 using IntegraPro.DataAccess.Mappers;
 using IntegraPro.DTO.Models;
@@ -10,41 +12,155 @@ public class UsuarioFactory : MasterDao
 {
     private readonly UsuarioMapper _mapper;
 
+    // Ajustado para pasar la cadena de conexión al MasterDao base
     public UsuarioFactory(string connectionString) : base(connectionString)
     {
         _mapper = new UsuarioMapper();
     }
 
+    /// <summary>
+    /// Obtiene un usuario y sus permisos. Método exento de validación de ejecutor 
+    /// porque es el punto de entrada para autenticación.
+    /// </summary>
     public UsuarioDTO? GetByUsername(string username)
     {
         var parameters = new SqlParameter[] {
             new SqlParameter("@username", username)
         };
 
-        // NOTA: Para que nombre_rol y permisos_json no lleguen nulos en el login,
-        // el SP 'sp_Usuario_GetByUsername' debe hacer el INNER JOIN con la tabla ROL.
+        // sp_Usuario_GetByUsername debe retornar: id, rol_id, sucursal_id, nombre_completo, 
+        // username, password_hash, correo_electronico, activo, nombre_rol, permisos_json
         var table = ExecuteQuery("sp_Usuario_GetByUsername", parameters);
 
-        if (table.Rows.Count == 0) return null;
+        if (table == null || table.Rows.Count == 0) return null;
 
         return _mapper.MapFromRow(table.Rows[0]);
     }
 
-    public void Create(UsuarioDTO usuario)
+    /// <summary>
+    /// Crea un usuario validando permisos y jurisdicción de sucursal.
+    /// </summary>
+    public void Create(UsuarioDTO nuevoUsuario, UsuarioDTO ejecutor)
     {
-        // Agregamos el correo_electronico a los parámetros del insert
+        if (!ejecutor.TienePermiso("usuarios"))
+            throw new UnauthorizedAccessException("No tiene permisos para gestionar usuarios.");
+
+        if (ejecutor.TienePermiso("solo_lectura"))
+            throw new UnauthorizedAccessException("Su cuenta está en modo solo lectura.");
+
+        // Si el admin está limitado a su sucursal, forzamos que el nuevo usuario sea de esa sucursal
+        if (ejecutor.TienePermiso("sucursal_limit"))
+        {
+            nuevoUsuario.SucursalId = ejecutor.SucursalId;
+
+            // No permitimos que cree roles de mayor jerarquía (asumiendo 1 = Admin Global)
+            if (nuevoUsuario.RolId == 1)
+                throw new UnauthorizedAccessException("No tiene autoridad para asignar el rol de Administrador Global.");
+        }
+
         var parameters = new SqlParameter[] {
             new SqlParameter("@id", 0),
-            new SqlParameter("@rol_id", usuario.RolId),
-            new SqlParameter("@sucursal_id", usuario.SucursalId),
-            new SqlParameter("@nombre_completo", usuario.NombreCompleto),
-            new SqlParameter("@username", usuario.Username),
-            new SqlParameter("@password_hash", usuario.PasswordHash),
-            new SqlParameter("@correo_electronico", usuario.CorreoElectronico ?? (object)DBNull.Value), // NUEVO
-            new SqlParameter("@activo", usuario.Activo)
+            new SqlParameter("@rol_id", nuevoUsuario.RolId),
+            new SqlParameter("@sucursal_id", nuevoUsuario.SucursalId),
+            new SqlParameter("@nombre_completo", nuevoUsuario.NombreCompleto),
+            new SqlParameter("@username", nuevoUsuario.Username),
+            new SqlParameter("@password_hash", nuevoUsuario.PasswordHash),
+            new SqlParameter("@correo_electronico", nuevoUsuario.CorreoElectronico ?? (object)DBNull.Value),
+            new SqlParameter("@activo", nuevoUsuario.Activo)
         };
 
         ExecuteStoredProcedure("sp_Usuario_Insert", parameters);
+    }
+
+    /// <summary>
+    /// Lista usuarios. Filtra por sucursal automáticamente según el perfil del ejecutor.
+    /// </summary>
+    public List<UsuarioDTO> GetAll(UsuarioDTO ejecutor)
+    {
+        int? sucursalFiltro = ejecutor.TienePermiso("sucursal_limit") ? ejecutor.SucursalId : null;
+
+        string sql = @"SELECT u.*, r.nombre_rol, r.permisos_json 
+                       FROM USUARIO u 
+                       INNER JOIN ROL r ON u.rol_id = r.id
+                       WHERE 1=1";
+
+        List<SqlParameter> parameters = new List<SqlParameter>();
+
+        if (sucursalFiltro.HasValue)
+        {
+            sql += " AND u.sucursal_id = @sucursalId";
+            parameters.Add(new SqlParameter("@sucursalId", sucursalFiltro.Value));
+        }
+
+        var table = ExecuteQuery(sql, parameters.ToArray(), false);
+        var lista = new List<UsuarioDTO>();
+
+        if (table != null)
+        {
+            foreach (DataRow row in table.Rows)
+            {
+                lista.Add(_mapper.MapFromRow(row));
+            }
+        }
+
+        return lista;
+    }
+
+    /// <summary>
+    /// Actualiza el rol verificando que el usuario pertenezca a la sucursal del ejecutor si hay restricciones.
+    /// </summary>
+    public void ActualizarRol(int usuarioId, int nuevoRolId, UsuarioDTO ejecutor)
+    {
+        if (!ejecutor.TienePermiso("usuarios") || ejecutor.TienePermiso("solo_lectura"))
+            throw new UnauthorizedAccessException("Permisos insuficientes para modificar roles.");
+
+        if (ejecutor.TienePermiso("sucursal_limit") && nuevoRolId == 1)
+            throw new UnauthorizedAccessException("Jurisdicción insuficiente para asignar administración global.");
+
+        string sql = "UPDATE USUARIO SET rol_id = @rolId WHERE id = @id";
+        var parameters = new List<SqlParameter> {
+            new SqlParameter("@id", usuarioId),
+            new SqlParameter("@rolId", nuevoRolId)
+        };
+
+        if (ejecutor.TienePermiso("sucursal_limit"))
+        {
+            sql += " AND sucursal_id = @sid";
+            parameters.Add(new SqlParameter("@sid", ejecutor.SucursalId));
+        }
+
+        int filas = ExecuteNonQuery(sql, parameters.ToArray(), false);
+
+        if (filas == 0)
+            throw new Exception("Operación fallida: El usuario no existe o se encuentra fuera de su sucursal.");
+    }
+
+    public List<RolDTO> GetRoles(UsuarioDTO ejecutor)
+    {
+        if (!ejecutor.TienePermiso("usuarios")) return new List<RolDTO>();
+
+        string sql = "SELECT id, nombre_rol, permisos_json FROM ROL";
+
+        // El admin de sucursal no debe ver/asignar el rol de Admin Global (ID 1)
+        if (ejecutor.TienePermiso("sucursal_limit"))
+            sql += " WHERE id > 1";
+
+        var table = ExecuteQuery(sql, [], false);
+        var lista = new List<RolDTO>();
+
+        if (table != null)
+        {
+            foreach (DataRow row in table.Rows)
+            {
+                lista.Add(new RolDTO
+                {
+                    Id = Convert.ToInt32(row["id"]),
+                    NombreRol = row["nombre_rol"].ToString() ?? "",
+                    PermisosJson = row["permisos_json"].ToString() ?? "{}"
+                });
+            }
+        }
+        return lista;
     }
 
     public void ActualizarSesionHardware(int usuarioId, string? hardwareId)
@@ -53,7 +169,6 @@ public class UsuarioFactory : MasterDao
             new SqlParameter("@id", usuarioId),
             new SqlParameter("@hardware_id_sesion", (object?)hardwareId ?? DBNull.Value)
         };
-
         ExecuteNonQuery("sp_Usuario_ActualizarSesion", parameters);
     }
 
@@ -63,59 +178,5 @@ public class UsuarioFactory : MasterDao
             new SqlParameter("@id", usuarioId)
         };
         ExecuteNonQuery("sp_Usuario_RegistrarLogin", parameters);
-    }
-
-    // ==========================================
-    // NUEVOS MÉTODOS PARA GESTIÓN DE ROLES
-    // ==========================================
-
-    public List<UsuarioDTO> GetAll()
-    {
-        // Modificamos u.* por u.correo_electronico explícito para asegurar que el Mapper lo encuentre
-        string sql = @"SELECT u.id, u.rol_id, u.sucursal_id, u.nombre_completo, u.username, 
-                              u.correo_electronico, u.activo, u.ultimo_login, u.hardware_id_sesion,
-                              r.nombre_rol, r.permisos_json 
-                       FROM USUARIO u 
-                       INNER JOIN ROL r ON u.rol_id = r.id";
-
-        var table = ExecuteQuery(sql, [], false);
-        var lista = new List<UsuarioDTO>();
-
-        foreach (DataRow row in table.Rows)
-        {
-            lista.Add(_mapper.MapFromRow(row));
-        }
-
-        return lista;
-    }
-
-    public void ActualizarRol(int usuarioId, int nuevoRolId)
-    {
-        string sql = "UPDATE USUARIO SET rol_id = @rolId WHERE id = @id";
-        var parameters = new SqlParameter[] {
-            new SqlParameter("@id", usuarioId),
-            new SqlParameter("@rolId", nuevoRolId)
-        };
-
-        ExecuteNonQuery(sql, parameters, false);
-    }
-
-    public List<RolDTO> GetRoles()
-    {
-        string sql = "SELECT id, nombre_rol, permisos_json FROM ROL";
-        var table = ExecuteQuery(sql, [], false);
-        var lista = new List<RolDTO>();
-
-        foreach (DataRow row in table.Rows)
-        {
-            lista.Add(new RolDTO
-            {
-                Id = Convert.ToInt32(row["id"]),
-                NombreRol = row["nombre_rol"].ToString() ?? "",
-                PermisosJson = row["permisos_json"].ToString() ?? "{}"
-            });
-        }
-
-        return lista;
     }
 }
