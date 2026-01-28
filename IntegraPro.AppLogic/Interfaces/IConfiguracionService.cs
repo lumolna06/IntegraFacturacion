@@ -5,13 +5,13 @@ namespace IntegraPro.AppLogic.Interfaces;
 
 public interface IConfiguracionService
 {
-    // ACTUALIZADO: Ahora requiere el ejecutor para validar permisos de lectura del módulo 'config'
     ApiResponse<EmpresaDTO> ObtenerDatosEmpresa(UsuarioDTO ejecutor);
-
+    ApiResponse<int> RegistrarEmpresa(EmpresaDTO empresa, UsuarioDTO? ejecutor);
     ApiResponse<bool> ActualizarEmpresa(EmpresaDTO empresa, UsuarioDTO ejecutor);
 
-    ApiResponse<bool> RegistrarLicenciaInicial(string nombre, string ruc, int equipos, string hid, UsuarioDTO ejecutor);
+    // MÉTODO MAESTRO PARA EL REGISTRO INICIAL
+    ApiResponse<bool> FinalizarInstalacion(RegistroInicialDTO modelo);
 
-    // Se mantiene sin ejecutor porque se consulta usualmente antes del login (validación de equipo)
+    ApiResponse<bool> RegistrarLicenciaInicial(string nombre, string ruc, int equipos, string hid, UsuarioDTO ejecutor);
     ApiResponse<LicenciaDTO> ConsultarLicencia(string hardwareId);
 }

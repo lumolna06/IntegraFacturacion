@@ -19,21 +19,41 @@ public class LicenciaService
         _factory = factory;
     }
 
-    public ApiResponse<bool> ActivarLicencia(string llaveActivacion, string nombreEmpresa, string ruc, int maxEquipos, UsuarioDTO ejecutor)
+    /// <summary>
+    /// Proceso de activación: Valida la llave generada y vincula el HID actual 
+    /// con la empresa en la tabla SISTEMA_LICENCIA.
+    /// </summary>
+    public ApiResponse<bool> ActivarLicencia(string llaveActivacion, string ruc, int maxEquipos)
     {
         try
         {
             string hidActual = GetHardwareId();
+
+            // 1. Generamos la llave esperada para validar la integridad
             string llaveEsperada = GenerarLlave(ruc, hidActual, maxEquipos);
 
-            if (llaveActivacion != llaveEsperada)
-                return new ApiResponse<bool>(false, "La llave de activación es inválida.");
+            if (llaveActivacion.Trim() != llaveEsperada)
+            {
+                return new ApiResponse<bool>(false, "La llave de activación es inválida para esta identificación y equipo.");
+            }
 
-            _factory.RegistrarConfiguracionInicial(nombreEmpresa, ruc, maxEquipos, hidActual, ejecutor);
-            return new ApiResponse<bool>(true, "¡Sistema activado con éxito!", true);
+            // 2. LLAMADA ACTUALIZADA: Pasamos los 4 parámetros requeridos por el Factory corregido
+            // ruc, hid, llave, maxEquipos
+            bool exito = _factory.ActualizarLicenciaExistente(ruc.Trim(), hidActual, llaveActivacion.Trim(), maxEquipos);
+
+            if (exito)
+            {
+                return new ApiResponse<bool>(true, "¡Sistema activado con éxito!");
+            }
+            else
+            {
+                return new ApiResponse<bool>(false, "No se encontró una empresa registrada con el RUC proporcionado.");
+            }
         }
-        catch (UnauthorizedAccessException ex) { return new ApiResponse<bool>(false, ex.Message); }
-        catch (Exception ex) { return new ApiResponse<bool>(false, $"Error: {ex.Message}"); }
+        catch (Exception ex)
+        {
+            return new ApiResponse<bool>(false, $"Error durante la activación: {ex.Message}");
+        }
     }
 
     public ApiResponse<bool> ValidarSistema()
@@ -41,6 +61,8 @@ public class LicenciaService
         try
         {
             string hid = GetHardwareId();
+
+            // Verificamos si el equipo está registrado en LICENCIA_EQUIPOS o SISTEMA_LICENCIA
             DataTable dt = _factory.ValidarLicenciaMultiEquipo(hid);
 
             if (dt != null && dt.Rows.Count > 0)
@@ -51,23 +73,37 @@ public class LicenciaService
                 if (resultado == "EQUIPO_AUTORIZADO" || resultado == "NUEVO_EQUIPO_REGISTRADO")
                 {
                     if (!string.IsNullOrEmpty(rucRegistrado) && EstaEnListaNegra(rucRegistrado))
-                        return new ApiResponse<bool>(false, "Licencia revocada.");
+                        return new ApiResponse<bool>(false, "Licencia revocada por el administrador.");
 
-                    return new ApiResponse<bool>(true, "Acceso concedido", true);
+                    return new ApiResponse<bool>(true, "Acceso concedido");
                 }
-                if (resultado == "LIMITE_ALCANZADO") return new ApiResponse<bool>(false, "Límite de equipos alcanzado.");
+
+                if (resultado == "LIMITE_ALCANZADO")
+                    return new ApiResponse<bool>(false, "Límite de equipos alcanzado para esta licencia.");
             }
-            return new ApiResponse<bool>(false, "Sistema no activado.");
+
+            return new ApiResponse<bool>(false, "EQUIPO_NO_AUTORIZADO");
         }
-        catch (Exception ex) { return new ApiResponse<bool>(false, $"Error: {ex.Message}"); }
+        catch (Exception ex)
+        {
+            return new ApiResponse<bool>(false, $"Error de validación: {ex.Message}");
+        }
     }
 
     public string GenerarLlave(string ruc, string hid, int maxEquipos)
     {
         using var sha = SHA256.Create();
+        // El formato de la cadena es crítico: RUC-HID-MAX-KEY
         string rawData = $"{ruc.Trim()}-{hid.Trim()}-{maxEquipos}-{_masterKey}";
         byte[] bytes = sha.ComputeHash(Encoding.UTF8.GetBytes(rawData));
-        return Convert.ToBase64String(bytes).Replace("+", "").Replace("/", "").Replace("=", "").Substring(0, 16).ToUpper();
+
+        // Formato amigable de 16 caracteres alfanuméricos
+        return Convert.ToBase64String(bytes)
+            .Replace("+", "")
+            .Replace("/", "")
+            .Replace("=", "")
+            .Substring(0, 16)
+            .ToUpper();
     }
 
     public string GetHardwareId()
@@ -100,7 +136,8 @@ public class LicenciaService
         try
         {
             using ManagementObjectSearcher searcher = new ManagementObjectSearcher($"SELECT {property} FROM {table}");
-            foreach (ManagementObject obj in searcher.Get()) return obj[property]?.ToString()?.Trim() ?? "";
+            foreach (ManagementObject obj in searcher.Get())
+                return obj[property]?.ToString()?.Trim() ?? "";
         }
         catch { }
         return "";

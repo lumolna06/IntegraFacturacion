@@ -4,53 +4,60 @@ using IntegraPro.DTO.Models;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
-namespace IntegraPro.API.Controllers; // Ajustado al namespace de tus otros controllers
+namespace IntegraPro.API.Controllers;
 
 [ApiController]
 [Route("api/[controller]")]
-public class LicenciaController(LicenciaService service) : BaseController // Herencia aplicada
+[AllowAnonymous] // Excluye este controlador del LicenseFilter global a nivel de clase
+public class LicenciaController(LicenciaService service) : BaseController
 {
     private readonly LicenciaService _service = service;
 
-    [AllowAnonymous]
     [HttpGet("mi-hardware-id")]
     public IActionResult GetHardwareId() => Ok(new { hardwareId = _service.GetHardwareId() });
 
-    [AllowAnonymous]
     [HttpPost("activar")]
-    public IActionResult Activar([FromQuery] string llave, [FromQuery] string empresa, [FromQuery] string ruc, [FromQuery] int maxEquipos)
+    public IActionResult Activar([FromQuery] string llave = "", [FromQuery] string ruc = "", [FromQuery] int maxEquipos = 1)
     {
-        // Usamos el sistema de permisos de UsuarioDTO pero marcado como Sistema (ID 0)
-        // ya que en la activación inicial no hay un token JWT todavía.
-        var sistema = new UsuarioDTO { Id = 0, RolId = 1, SucursalId = 1, PermisosJson = "{\"config\":true}" };
+        // Validamos manualmente para evitar el Error 400 automático de .NET
+        if (string.IsNullOrWhiteSpace(llave) || string.IsNullOrWhiteSpace(ruc))
+        {
+            return Ok(new ApiResponse<bool>(false, "La llave de activación y la identificación son obligatorias."));
+        }
 
-        var response = _service.ActivarLicencia(llave, empresa, ruc, maxEquipos, sistema);
+        var response = _service.ActivarLicencia(llave.Trim(), ruc.Trim(), maxEquipos);
+
+        // Siempre devolvemos Ok(200) para que el AJAX de jQuery pueda leer la respuesta
+        // El 'toastr' se encargará de mostrar si fue true o false según res.result
         return Ok(response);
     }
 
-    [AllowAnonymous]
     [HttpPost("auto-activar")]
-    public IActionResult AutoActivar([FromQuery] string empresa, [FromQuery] string ruc)
+    public IActionResult AutoActivar([FromQuery] string ruc = "")
     {
         try
         {
-            var sistema = new UsuarioDTO { Id = 0, RolId = 1, SucursalId = 1, PermisosJson = "{\"config\":true}" };
+            if (string.IsNullOrWhiteSpace(ruc))
+                return Ok(new ApiResponse<bool>(false, "El RUC es obligatorio para la auto-activación."));
 
             string hid = _service.GetHardwareId();
             int equiposGratis = 5;
-            string llaveGenerada = _service.GenerarLlave(ruc, hid, equiposGratis);
 
-            var response = _service.ActivarLicencia(llaveGenerada, empresa, ruc, equiposGratis, sistema);
+            string llaveGenerada = _service.GenerarLlave(ruc.Trim(), hid, equiposGratis);
+
+            var response = _service.ActivarLicencia(llaveGenerada, ruc.Trim(), equiposGratis);
             return Ok(response);
         }
-        catch (Exception ex) { return BadRequest(new ApiResponse<bool>(false, ex.Message)); }
+        catch (Exception ex)
+        {
+            return Ok(new ApiResponse<bool>(false, $"Error interno: {ex.Message}"));
+        }
     }
 
     [HttpGet("validar-estado")]
-    [Authorize] // Para validar el estado actual, sí exigimos que el usuario esté logueado
+    [Authorize] // Este se mantiene protegido ya que requiere un token de usuario logueado
     public IActionResult Validar()
     {
-        // Aquí podrías incluso pasar UsuarioActual si el servicio lo requiere para auditoría
         var response = _service.ValidarSistema();
         return response.Result ? Ok(response) : StatusCode(403, response);
     }

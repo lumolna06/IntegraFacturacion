@@ -25,7 +25,7 @@ public class LicenseFilter : IAuthorizationFilter
         var path = context.HttpContext.Request.Path.Value?.ToLower() ?? "";
 
         // Si la URL contiene "licencia", permitimos el acceso sin validar hardware ni sesión
-        if (path.Contains("/api/licencia"))
+        if (path.Contains("/api/licencia") || path.Contains("finalizar-instalacion"))
         {
             return;
         }

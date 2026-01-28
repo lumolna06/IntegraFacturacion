@@ -11,7 +11,6 @@ public class EmpresaFactory(string connectionString) : MasterDao(connectionStrin
 {
     /// <summary>
     /// Obtiene la configuración global de la empresa. 
-    /// Se añade el ejecutor para validar que tiene permiso de acceso al módulo.
     /// </summary>
     public EmpresaDTO? ObtenerConfiguracion(UsuarioDTO ejecutor)
     {
@@ -39,36 +38,41 @@ public class EmpresaFactory(string connectionString) : MasterDao(connectionStrin
 
     /// <summary>
     /// Alias para compatibilidad con VentaService. 
-    /// Nota: Si VentaService lo usa internamente para imprimir facturas, 
-    /// asegúrate de pasar un ejecutor válido o sobrecargar si es un proceso automático.
     /// </summary>
     public EmpresaDTO? ObtenerEmpresa(UsuarioDTO ejecutor) => ObtenerConfiguracion(ejecutor);
 
     /// <summary>
-    /// Registra la empresa por primera vez.
+    /// Registra la empresa por primera vez (Modo Instalación compatible).
     /// </summary>
-    public int RegistrarEmpresa(EmpresaDTO e, UsuarioDTO ejecutor)
+    public int RegistrarEmpresa(EmpresaDTO e, UsuarioDTO? ejecutor)
     {
-        // SEGURIDAD: Usamos los helpers estandarizados
-        ejecutor.ValidarAcceso("config");
-        ejecutor.ValidarEscritura();
-
-        // 2. VALIDACIÓN DE EXISTENCIA PREVIA (Lógica de negocio intacta)
+        // 1. VALIDACIÓN DE EXISTENCIA PREVIA
         string sqlCheck = "SELECT COUNT(*) FROM EMPRESA";
         var count = Convert.ToInt32(ExecuteScalar(sqlCheck, null, false));
 
+        // 2. LÓGICA DE SEGURIDAD (Solo aplica si ya existe una configuración)
         if (count > 0)
-            throw new Exception("Ya existe una empresa registrada. Use Actualizar para modificar los datos.");
+        {
+            if (ejecutor == null) throw new Exception("Acceso denegado: El sistema ya está configurado.");
 
-        string sql = @"INSERT INTO EMPRESA (nombre_comercial, cedula_juridica, correo_notificaciones, tipo_regimen)
-                        VALUES (@nom, @ced, @cor, @reg);
+            ejecutor.ValidarAcceso("config");
+            ejecutor.ValidarEscritura();
+
+            throw new Exception("Ya existe una empresa registrada. Use Actualizar para modificar los datos.");
+        }
+
+        // 3. INSERCIÓN (Se incluyen campos NOT NULL obligatorios según script SQL)
+        string sql = @"INSERT INTO EMPRESA (nombre_comercial, razon_social, cedula_juridica, correo_notificaciones, tipo_regimen, permitir_stock_negativo)
+                        VALUES (@nom, @raz, @ced, @cor, @reg, @stk);
                         SELECT CAST(SCOPE_IDENTITY() as int);";
 
         var p = new[] {
             new SqlParameter("@nom", e.NombreComercial),
+            new SqlParameter("@raz", string.IsNullOrEmpty(e.RazonSocial) ? e.NombreComercial : e.RazonSocial),
             new SqlParameter("@ced", e.CedulaJuridica),
             new SqlParameter("@cor", (object?)e.CorreoNotificaciones ?? DBNull.Value),
-            new SqlParameter("@reg", (object?)e.TipoRegimen ?? "Tradicional")
+            new SqlParameter("@reg", (object?)e.TipoRegimen ?? "Tradicional"),
+            new SqlParameter("@stk", e.PermitirStockNegativo)
         };
 
         return Convert.ToInt32(ExecuteScalar(sql, p, false));
@@ -85,17 +89,21 @@ public class EmpresaFactory(string connectionString) : MasterDao(connectionStrin
 
         string sql = @"UPDATE EMPRESA SET 
                         nombre_comercial = @nom, 
+                        razon_social = @raz,
                         cedula_juridica = @ced,
                         correo_notificaciones = @cor, 
-                        tipo_regimen = @reg
+                        tipo_regimen = @reg,
+                        permitir_stock_negativo = @stk
                        WHERE id = @id";
 
         var p = new[] {
             new SqlParameter("@id", e.Id),
             new SqlParameter("@nom", e.NombreComercial),
+            new SqlParameter("@raz", e.RazonSocial),
             new SqlParameter("@ced", e.CedulaJuridica),
             new SqlParameter("@cor", (object?)e.CorreoNotificaciones ?? DBNull.Value),
-            new SqlParameter("@reg", (object?)e.TipoRegimen ?? "Tradicional")
+            new SqlParameter("@reg", (object?)e.TipoRegimen ?? "Tradicional"),
+            new SqlParameter("@stk", e.PermitirStockNegativo)
         };
 
         ExecuteNonQuery(sql, p, false);

@@ -8,22 +8,17 @@ namespace IntegraPro.DataAccess.Factory;
 
 public class ConfiguracionFactory(string connectionString) : MasterDao(connectionString)
 {
-    /// <summary>
-    /// Obtiene los datos comerciales. Ahora requiere validación de acceso al módulo config.
-    /// </summary>
+    #region Gestión de Empresa y Seguridad
+
     public EmpresaDTO? ObtenerEmpresa(UsuarioDTO ejecutor)
     {
-        // SEGURIDAD: Validar que el usuario tiene permiso para ver la configuración
         ejecutor.ValidarAcceso("config");
 
-        string sql = @"SELECT TOP 1 
-                        id, nombre_comercial, razon_social, cedula_juridica, 
+        string sql = @"SELECT TOP 1 id, nombre_comercial, razon_social, cedula_juridica, 
                         tipo_regimen, telefono, correo_notificaciones, sitio_web, 
-                        logo, permitir_stock_negativo
-                       FROM EMPRESA";
+                        logo, permitir_stock_negativo FROM EMPRESA";
 
         DataTable dt = ExecuteQuery(sql, null, false);
-
         if (dt == null || dt.Rows.Count == 0) return null;
 
         DataRow row = dt.Rows[0];
@@ -37,31 +32,22 @@ public class ConfiguracionFactory(string connectionString) : MasterDao(connectio
             Telefono = row["telefono"]?.ToString() ?? string.Empty,
             CorreoNotificaciones = row["correo_notificaciones"]?.ToString() ?? string.Empty,
             SitioWeb = row["sitio_web"]?.ToString() ?? string.Empty,
-            Logo = row["logo"]?.ToString(),
+            Logo = row["logo"] != DBNull.Value ? row["logo"].ToString() : null,
             PermitirStockNegativo = row["permitir_stock_negativo"] != DBNull.Value && Convert.ToBoolean(row["permitir_stock_negativo"])
         };
     }
 
-    /// <summary>
-    /// Guarda o actualiza con lógica blindada.
-    /// </summary>
     public void GuardarEmpresa(EmpresaDTO empresa, UsuarioDTO ejecutor)
     {
-        // SEGURIDAD: Reemplazamos el 'if' manual por los helpers estandarizados
         ejecutor.ValidarAcceso("config");
         ejecutor.ValidarEscritura();
 
         string sql = @"
             UPDATE EMPRESA SET 
-                nombre_comercial = CASE WHEN ISNULL(@nom, '') NOT IN ('', 'string') THEN @nom ELSE nombre_comercial END,
-                razon_social = CASE WHEN ISNULL(@raz, '') NOT IN ('', 'string') THEN @raz ELSE razon_social END,
-                cedula_juridica = CASE WHEN ISNULL(@ced, '') NOT IN ('', 'string') THEN @ced ELSE cedula_juridica END,
-                tipo_regimen = CASE WHEN ISNULL(@reg, '') NOT IN ('', 'string') THEN @reg ELSE tipo_regimen END,
-                telefono = CASE WHEN ISNULL(@tel, '') NOT IN ('', 'string') THEN @tel ELSE telefono END,
-                correo_notificaciones = CASE WHEN ISNULL(@cor, '') NOT IN ('', 'string') THEN @cor ELSE correo_notificaciones END,
-                sitio_web = CASE WHEN ISNULL(@sit, '') NOT IN ('', 'string') THEN @sit ELSE sitio_web END,
-                permitir_stock_negativo = @stk
-            WHERE id = 1;
+                nombre_comercial = @nom, razon_social = @raz, cedula_juridica = @ced,
+                tipo_regimen = @reg, telefono = @tel, correo_notificaciones = @cor, 
+                sitio_web = @sit, permitir_stock_negativo = @stk 
+            WHERE id = @id;
             
             IF @@ROWCOUNT = 0
             BEGIN
@@ -70,6 +56,7 @@ public class ConfiguracionFactory(string connectionString) : MasterDao(connectio
             END";
 
         var p = new SqlParameter[] {
+            new SqlParameter("@id", empresa.Id),
             new SqlParameter("@nom", (object?)empresa.NombreComercial ?? DBNull.Value),
             new SqlParameter("@raz", (object?)empresa.RazonSocial ?? DBNull.Value),
             new SqlParameter("@ced", (object?)empresa.CedulaJuridica ?? DBNull.Value),
@@ -83,8 +70,82 @@ public class ConfiguracionFactory(string connectionString) : MasterDao(connectio
         ExecuteNonQuery(sql, p, false);
     }
 
+    #endregion
+
+    #region Gestión de Licencias y Activación
+
+    public bool ActualizarLicenciaExistente(string ruc, string hid, string llave, int maxEquipos)
+    {
+        string sql = @"
+            DECLARE @EmpId INT;
+            SELECT @EmpId = id FROM EMPRESA WHERE cedula_juridica = @ruc;
+            IF @EmpId IS NOT NULL
+            BEGIN
+                IF EXISTS (SELECT 1 FROM SISTEMA_LICENCIA WHERE empresa_id = @EmpId)
+                BEGIN
+                    UPDATE SISTEMA_LICENCIA SET 
+                        licencia_key = @llave, hardware_id = @hid, 
+                        fecha_activacion = GETDATE(), fecha_vencimiento = DATEADD(YEAR, 1, GETDATE()),
+                        estado = 'ACTIVO', limite_usuarios = @max 
+                    WHERE empresa_id = @EmpId;
+                END
+                ELSE
+                BEGIN
+                    INSERT INTO SISTEMA_LICENCIA (empresa_id, licencia_key, hardware_id, fecha_activacion, fecha_vencimiento, estado, limite_usuarios)
+                    VALUES (@EmpId, @llave, @hid, GETDATE(), DATEADD(YEAR, 1, GETDATE()), 'ACTIVO', @max);
+                END
+                SELECT 1;
+            END
+            ELSE SELECT 0;";
+
+        var p = new SqlParameter[] {
+            new SqlParameter("@ruc", ruc),
+            new SqlParameter("@hid", hid),
+            new SqlParameter("@llave", llave),
+            new SqlParameter("@max", maxEquipos)
+        };
+
+        DataTable dt = ExecuteQuery(sql, p, false);
+        return dt != null && dt.Rows.Count > 0 && Convert.ToInt32(dt.Rows[0][0]) > 0;
+    }
+
+    public DataTable ValidarLicenciaMultiEquipo(string hardwareId)
+    {
+        string sql = @"
+            SELECT TOP 1 
+                CASE WHEN L.estado = 'ACTIVO' THEN 'EQUIPO_AUTORIZADO' ELSE 'INACTIVO' END AS Resultado,
+                E.cedula_juridica AS Ruc
+            FROM SISTEMA_LICENCIA L
+            JOIN EMPRESA E ON L.empresa_id = E.id
+            WHERE L.hardware_id = @hid";
+
+        var p = new SqlParameter[] { new SqlParameter("@hid", hardwareId) };
+        return ExecuteQuery(sql, p, false);
+    }
+
+    #endregion
+
+    #region Infraestructura Inicial (Métodos Requeridos por ConfiguracionService)
+
     /// <summary>
-    /// Registra la licencia. Mantenemos el permiso 'config'.
+    /// Crea la sucursal por defecto si no existe.
+    /// </summary>
+    public void CrearSucursalBase(int empresaId)
+    {
+        string sql = @"IF NOT EXISTS (SELECT 1 FROM SUCURSAL WHERE id = 1) 
+                       BEGIN
+                           SET IDENTITY_INSERT SUCURSAL ON;
+                           INSERT INTO SUCURSAL (id, nombre, activa, empresa_id) 
+                           VALUES (1, 'Casa Matriz', 1, @empId);
+                           SET IDENTITY_INSERT SUCURSAL OFF;
+                       END";
+
+        var p = new SqlParameter[] { new SqlParameter("@empId", empresaId) };
+        ExecuteNonQuery(sql, p, false);
+    }
+
+    /// <summary>
+    /// Registra la activación inicial a través de Store Procedure.
     /// </summary>
     public void RegistrarConfiguracionInicial(string nombreEmpresa, string ruc, int maxEquipos, string hid, UsuarioDTO ejecutor)
     {
@@ -101,28 +162,5 @@ public class ConfiguracionFactory(string connectionString) : MasterDao(connectio
         ExecuteNonQuery("sp_Configuracion_ActivarSistema", parameters);
     }
 
-    // Los métodos ValidarLicenciaMultiEquipo y ObtenerLicencia se quedan igual
-    // ya que se usan en procesos de arranque o validación de equipo físico (pre-auth).
-
-    public DataTable ValidarLicenciaMultiEquipo(string hardwareId)
-    {
-        var parameters = new SqlParameter[] { new SqlParameter("@hardware_id", hardwareId) };
-        return ExecuteQuery("sp_Licencia_AutoValidar_MultiEquipo", parameters);
-    }
-
-    public LicenciaDTO? ObtenerLicencia(string hardwareId)
-    {
-        var p = new SqlParameter[] { new SqlParameter("@hardware_id", hardwareId) };
-        var dt = ExecuteQuery("sp_Licencia_Validar", p);
-
-        if (dt == null || dt.Rows.Count == 0) return null;
-
-        var row = dt.Rows[0];
-        return new LicenciaDTO
-        {
-            HardwareId = row["hardware_id"].ToString()!,
-            Estado = row["estado"].ToString()!,
-            FechaVencimiento = Convert.ToDateTime(row["fecha_vencimiento"])
-        };
-    }
+    #endregion
 }
