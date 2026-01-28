@@ -32,14 +32,16 @@ public class ProformaFactory(string connectionString) : MasterDao(connectionStri
         // Cálculo de totales línea por línea
         foreach (var det in p.Detalles)
         {
-            string sqlValidar = "SELECT costo_actual, porcentaje_impuesto FROM PRODUCTO WHERE id = @prodid";
+            // MODIFICACIÓN: Se cambia 'costo_actual' por 'precio_1'
+            string sqlValidar = "SELECT precio_1, porcentaje_impuesto FROM PRODUCTO WHERE id = @prodid";
             var dt = ExecuteQuery(sqlValidar, new[] { new SqlParameter("@prodid", det.ProductoId) }, false);
 
             if (dt == null || dt.Rows.Count == 0)
                 throw new Exception($"El producto con ID {det.ProductoId} no existe.");
 
             DataRow row = dt.Rows[0];
-            decimal precioVigente = Convert.ToDecimal(row["costo_actual"]);
+            // MODIFICACIÓN: Se asigna precio_1 como el precio de venta vigente
+            decimal precioVigente = Convert.ToDecimal(row["precio_1"]);
             decimal pctIVA = Convert.ToDecimal(row["porcentaje_impuesto"]);
 
             decimal subtotalLinea = precioVigente * det.Cantidad;
