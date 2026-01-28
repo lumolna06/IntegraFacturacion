@@ -3,6 +3,8 @@ using IntegraPro.DataAccess.Mappers;
 using IntegraPro.DTO.Models;
 using Microsoft.Data.SqlClient;
 using System.Data;
+using System.Collections.Generic;
+using System;
 
 namespace IntegraPro.DataAccess.Factory;
 
@@ -10,29 +12,57 @@ public class ProductoFactory(string connectionString) : MasterDao(connectionStri
 {
     private readonly ProductoMapper _mapper = new();
 
-    /// <summary>
-    /// Obtiene todos los productos filtrando por sucursal si el usuario tiene restricciones.
-    /// </summary>
     public List<ProductoDTO> GetAll(UsuarioDTO ejecutor)
     {
-        ejecutor.ValidarAcceso("productos"); // Validación preventiva de módulo
+        ejecutor.ValidarAcceso("productos");
 
-        string sql = "SELECT p.* FROM PRODUCTO p";
-        SqlParameter[]? parameters = null;
+        string sql;
+        List<SqlParameter> parameters = new();
 
-        if (ejecutor.TienePermiso("sucursal_limit"))
+        if (!ejecutor.TienePermiso("all") && ejecutor.TienePermiso("sucursal_limit"))
         {
-            sql += " INNER JOIN PRODUCTO_SUCURSAL ps ON p.id = ps.producto_id WHERE p.activo = 1 AND ps.sucursal_id = @sucId";
-            parameters = [new SqlParameter("@sucId", ejecutor.SucursalId)];
+            sql = @"SELECT p.*, ps.sucursal_id, s.nombre as sucursal_nombre, ps.existencia as existencia_local 
+                FROM PRODUCTO p 
+                INNER JOIN PRODUCTO_SUCURSAL ps ON p.id = ps.producto_id 
+                INNER JOIN SUCURSAL s ON ps.sucursal_id = s.id
+                WHERE p.activo = 1 AND ps.sucursal_id = @sucId";
+
+            parameters.Add(new SqlParameter("@sucId", ejecutor.SucursalId));
         }
         else
         {
-            sql += " WHERE p.activo = 1";
+            sql = @"SELECT p.*, 
+                           ps.sucursal_id, 
+                           s.nombre as sucursal_nombre,
+                           ps.existencia as existencia_local,
+                           (SELECT SUM(existencia) FROM PRODUCTO_SUCURSAL WHERE producto_id = p.id) as existencia_total
+                FROM PRODUCTO p
+                LEFT JOIN PRODUCTO_SUCURSAL ps ON p.id = ps.producto_id
+                LEFT JOIN SUCURSAL s ON ps.sucursal_id = s.id
+                WHERE p.activo = 1";
         }
 
-        var dt = ExecuteQuery(sql, parameters, false);
+        var dt = ExecuteQuery(sql, parameters.Count > 0 ? parameters.ToArray() : null, false);
         var lista = new List<ProductoDTO>();
-        foreach (DataRow row in dt.Rows) lista.Add(_mapper.MapFromRow(row));
+
+        foreach (DataRow row in dt.Rows)
+        {
+            var dto = _mapper.MapFromRow(row);
+
+            if (row.Table.Columns.Contains("sucursal_nombre") && row["sucursal_nombre"] != DBNull.Value)
+            {
+                dto.Descripcion = $"[Sede: {row["sucursal_nombre"]}] " + (dto.Descripcion ?? "");
+            }
+
+            if (row.Table.Columns.Contains("existencia_total"))
+            {
+                dto.Existencia = row["existencia_total"] != DBNull.Value
+                                 ? Convert.ToDecimal(row["existencia_total"])
+                                 : 0m;
+            }
+
+            lista.Add(dto);
+        }
         return lista;
     }
 
@@ -40,12 +70,15 @@ public class ProductoFactory(string connectionString) : MasterDao(connectionStri
     {
         ejecutor.ValidarAcceso("productos");
 
-        string sql = "SELECT p.* FROM PRODUCTO p";
+        string sql = @"SELECT p.*, ps.sucursal_id, ps.existencia as existencia_local 
+                       FROM PRODUCTO p 
+                       LEFT JOIN PRODUCTO_SUCURSAL ps ON p.id = ps.producto_id";
+
         List<SqlParameter> parameters = [new SqlParameter("@id", id)];
 
-        if (ejecutor.TienePermiso("sucursal_limit"))
+        if (!ejecutor.TienePermiso("all") && ejecutor.TienePermiso("sucursal_limit"))
         {
-            sql += " INNER JOIN PRODUCTO_SUCURSAL ps ON p.id = ps.producto_id WHERE p.id = @id AND ps.sucursal_id = @sucId";
+            sql += " WHERE p.id = @id AND ps.sucursal_id = @sucId";
             parameters.Add(new SqlParameter("@sucId", ejecutor.SucursalId));
         }
         else
@@ -62,7 +95,7 @@ public class ProductoFactory(string connectionString) : MasterDao(connectionStri
         ejecutor.ValidarAcceso("productos");
         ejecutor.ValidarEscritura();
 
-        if (ejecutor.TienePermiso("sucursal_limit"))
+        if (!ejecutor.TienePermiso("all") && ejecutor.TienePermiso("sucursal_limit"))
             producto.SucursalId = ejecutor.SucursalId;
 
         object result = ExecuteScalar("sp_Producto_Insert", _mapper.MapToParameters(producto).ToArray(), true);
@@ -74,9 +107,8 @@ public class ProductoFactory(string connectionString) : MasterDao(connectionStri
         ejecutor.ValidarAcceso("productos");
         ejecutor.ValidarEscritura();
 
-        if (ejecutor.TienePermiso("sucursal_limit"))
+        if (!ejecutor.TienePermiso("all") && ejecutor.TienePermiso("sucursal_limit"))
         {
-            // Validamos que el producto realmente pertenezca a la sucursal del usuario antes de actualizar
             var prodActual = GetById(producto.Id, ejecutor);
             if (prodActual == null)
                 throw new UnauthorizedAccessException("No tiene permisos para modificar este producto en su sucursal.");
@@ -87,45 +119,12 @@ public class ProductoFactory(string connectionString) : MasterDao(connectionStri
         ExecuteNonQuery("sp_Producto_Update", _mapper.MapToParameters(producto).ToArray(), true);
     }
 
-    public void InsertarComposicion(int padreId, int materialId, decimal cantidad, UsuarioDTO ejecutor)
-    {
-        ejecutor.ValidarAcceso("productos");
-        ejecutor.ValidarEscritura();
-
-        var parameters = new[]
-        {
-            new SqlParameter("@producto_padre_id", padreId),
-            new SqlParameter("@material_id", materialId),
-            new SqlParameter("@cantidad_necesaria", cantidad)
-        };
-
-        string sql = "INSERT INTO PRODUCTO_COMPOSICION (producto_padre_id, material_id, cantidad_necesaria) VALUES (@producto_padre_id, @material_id, @cantidad_necesaria)";
-        ExecuteNonQuery(sql, parameters, false);
-    }
-
-    public List<ProductoComposicionDTO> ObtenerComposicion(int padreId)
-    {
-        // Este método suele ser interno para procesos de producción, no requiere validación de escritura
-        var parameters = new[] { new SqlParameter("@id", padreId) };
-        var dt = ExecuteQuery("SELECT material_id, cantidad_necesaria FROM PRODUCTO_COMPOSICION WHERE producto_padre_id = @id", parameters, false);
-
-        var lista = new List<ProductoComposicionDTO>();
-        foreach (DataRow row in dt.Rows)
-        {
-            lista.Add(new ProductoComposicionDTO
-            {
-                MaterialId = Convert.ToInt32(row["material_id"]),
-                CantidadNecesaria = Convert.ToDecimal(row["cantidad_necesaria"])
-            });
-        }
-        return lista;
-    }
-
     public List<ProductoDTO> GetStockAlerts(UsuarioDTO ejecutor)
     {
         ejecutor.ValidarAcceso("productos");
 
-        string sql = @"SELECT p.id, p.nombre, p.stock_minimo, ps.existencia 
+        // Cambiamos p.id, p.nombre por p.* para que el Mapper no falle por columnas faltantes
+        string sql = @"SELECT p.*, ps.existencia as existencia_local, ps.sucursal_id 
                        FROM PRODUCTO p 
                        INNER JOIN PRODUCTO_SUCURSAL ps ON p.id = ps.producto_id 
                        WHERE ps.existencia <= p.stock_minimo 
@@ -133,7 +132,7 @@ public class ProductoFactory(string connectionString) : MasterDao(connectionStri
 
         List<SqlParameter> parameters = new();
 
-        if (ejecutor.TienePermiso("sucursal_limit"))
+        if (!ejecutor.TienePermiso("all") && ejecutor.TienePermiso("sucursal_limit"))
         {
             sql += " AND ps.sucursal_id = @sucId";
             parameters.Add(new SqlParameter("@sucId", ejecutor.SucursalId));
@@ -143,12 +142,35 @@ public class ProductoFactory(string connectionString) : MasterDao(connectionStri
         var lista = new List<ProductoDTO>();
         foreach (DataRow row in dt.Rows)
         {
-            lista.Add(new ProductoDTO
+            // Ahora el mapper recibirá todas las columnas y no dará error de DBNull
+            lista.Add(_mapper.MapFromRow(row));
+        }
+        return lista;
+    }
+
+    public void InsertarComposicion(int padreId, int materialId, decimal cantidad, UsuarioDTO ejecutor)
+    {
+        ejecutor.ValidarAcceso("productos");
+        ejecutor.ValidarEscritura();
+        var parameters = new[] {
+            new SqlParameter("@producto_padre_id", padreId),
+            new SqlParameter("@material_id", materialId),
+            new SqlParameter("@cantidad_necesaria", cantidad)
+        };
+        ExecuteNonQuery("INSERT INTO PRODUCTO_COMPOSICION (producto_padre_id, material_id, cantidad_necesaria) VALUES (@producto_padre_id, @material_id, @cantidad_necesaria)", parameters, false);
+    }
+
+    public List<ProductoComposicionDTO> ObtenerComposicion(int padreId)
+    {
+        var parameters = new[] { new SqlParameter("@id", padreId) };
+        var dt = ExecuteQuery("SELECT material_id, cantidad_necesaria FROM PRODUCTO_COMPOSICION WHERE producto_padre_id = @id", parameters, false);
+        var lista = new List<ProductoComposicionDTO>();
+        foreach (DataRow row in dt.Rows)
+        {
+            lista.Add(new ProductoComposicionDTO
             {
-                Id = Convert.ToInt32(row["id"]),
-                Nombre = row["nombre"].ToString() ?? "",
-                Existencia = Convert.ToDecimal(row["existencia"]),
-                StockMinimo = Convert.ToDecimal(row["stock_minimo"])
+                MaterialId = Convert.ToInt32(row["material_id"]),
+                CantidadNecesaria = Convert.ToDecimal(row["cantidad_necesaria"])
             });
         }
         return lista;

@@ -11,6 +11,11 @@ public class ProductoMapper : IMapper<ProductoDTO>
         return new ProductoDTO
         {
             Id = Convert.ToInt32(row["id"]),
+            // Agregamos el mapeo de SucursalId para que no salga en 0
+            SucursalId = row.Table.Columns.Contains("sucursal_id") && row["sucursal_id"] != DBNull.Value
+                         ? Convert.ToInt32(row["sucursal_id"])
+                         : 0,
+
             CategoriaId = Convert.ToInt32(row["categoria_id"]),
             CodCabys = row["cod_cabys"]?.ToString(),
             CodigoBarras = row["codigo_barras"]?.ToString(),
@@ -24,7 +29,6 @@ public class ProductoMapper : IMapper<ProductoDTO>
             Precio3 = row["precio_3"] != DBNull.Value ? Convert.ToDecimal(row["precio_3"]) : null,
             Precio4 = row["precio_4"] != DBNull.Value ? Convert.ToDecimal(row["precio_4"]) : null,
 
-            // Lógica para capturar existencia local si viene de un JOIN o la general
             Existencia = row.Table.Columns.Contains("existencia_local")
                          ? Convert.ToDecimal(row["existencia_local"])
                          : Convert.ToDecimal(row["existencia"]),
@@ -32,7 +36,6 @@ public class ProductoMapper : IMapper<ProductoDTO>
             StockMinimo = Convert.ToDecimal(row["stock_minimo"]),
             ExentoIva = Convert.ToBoolean(row["exento_iva"]),
 
-            // Capturamos el porcentaje de impuesto (según tu SQL)
             PorcentajeImpuesto = row.Table.Columns.Contains("porcentaje_impuesto")
                                  ? Convert.ToDecimal(row["porcentaje_impuesto"])
                                  : 0,
@@ -40,6 +43,7 @@ public class ProductoMapper : IMapper<ProductoDTO>
             EsServicio = Convert.ToBoolean(row["es_servicio"]),
             EsElaborado = Convert.ToBoolean(row["es_elaborado"]),
             Activo = Convert.ToBoolean(row["activo"])
+
         };
     }
 

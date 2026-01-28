@@ -96,6 +96,11 @@ builder.Services.AddScoped(sp => new XmlParserService(connectionString));
 builder.Services.AddControllers(options =>
 {
     options.Filters.Add<LicenseFilter>();
+})
+.AddJsonOptions(options =>
+{
+    // Esta es la línea mágica que resolverá tu problema:
+    options.JsonSerializerOptions.PropertyNameCaseInsensitive = true;
 });
 
 builder.Services.AddEndpointsApiExplorer();

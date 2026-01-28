@@ -9,21 +9,30 @@ namespace IntegraPro.DataAccess.Factory;
 
 public class InventarioFactory(string connectionString) : MasterDao(connectionString)
 {
-    /// <summary>
-    /// Inserta un movimiento de inventario validando permisos y forzando la sucursal del ejecutor.
-    /// </summary>
     public bool Insertar(MovimientoInventarioDTO dto, UsuarioDTO ejecutor)
     {
-        // 1. SEGURIDAD ESTÁNDAR
+        // 1. SEGURIDAD BÁSICA
         ejecutor.ValidarAcceso("inventario");
         ejecutor.ValidarEscritura();
 
-        // 2. SEGURIDAD DE SUCURSAL
-        // Si el usuario tiene restricción de sucursal, ignoramos lo que venga en el DTO 
-        // y forzamos su propia SucursalId para evitar que afecte stock de otras sedes.
-        int sucursalDestino = ejecutor.TienePermiso("sucursal_limit")
-            ? ejecutor.SucursalId
-            : dto.SucursalId;
+        // 2. LÓGICA DE PRIORIDAD DE SUCURSAL (EL CORAZÓN DEL CAMBIO)
+        int sucursalDestino;
+
+        // Si es 'all', el administrador manda y el JSON manda.
+        if (ejecutor.TienePermiso("all"))
+        {
+            sucursalDestino = dto.SucursalId; // Aquí ya tomará el 3 del JSON
+        }
+        // Si NO es 'all' pero tiene límite, forzamos su sede.
+        else if (ejecutor.TienePermiso("sucursal_limit"))
+        {
+            sucursalDestino = ejecutor.SucursalId;
+        }
+        // Caso por defecto (seguridad)
+        else
+        {
+            sucursalDestino = dto.SucursalId;
+        }
 
         string sql = @"INSERT INTO MOVIMIENTO_INVENTARIO 
                        (producto_id, usuario_id, sucursal_id, tipo_movimiento, cantidad, documento_referencia, notas) 
@@ -32,7 +41,7 @@ public class InventarioFactory(string connectionString) : MasterDao(connectionSt
         var p = new[] {
             new SqlParameter("@pid", dto.ProductoId),
             new SqlParameter("@uid", ejecutor.Id),
-            new SqlParameter("@sid", sucursalDestino),
+            new SqlParameter("@sid", sucursalDestino), // Usamos la variable calculada
             new SqlParameter("@tipo", dto.TipoMovimiento.ToUpper()),
             new SqlParameter("@cant", dto.Cantidad),
             new SqlParameter("@ref", (object?)dto.DocumentoReferencia ?? DBNull.Value),
@@ -46,22 +55,21 @@ public class InventarioFactory(string connectionString) : MasterDao(connectionSt
         }
         catch (Exception)
         {
-            // El error subirá al Service para ser encapsulado en el ApiResponse
             throw;
         }
     }
 
-    /// <summary>
-    /// Consulta el historial con filtrado automático por sucursal según el perfil.
-    /// </summary>
     public DataTable ObtenerHistorial(UsuarioDTO ejecutor, int? productoId, DateTime? desde, DateTime? hasta)
     {
-        // 1. SEGURIDAD: Debe tener permiso de inventario o auditoría para ver estos datos
         if (!ejecutor.TienePermiso("inventario") && !ejecutor.TienePermiso("auditoria"))
-            throw new UnauthorizedAccessException("No tiene permisos para consultar el historial de movimientos.");
+            throw new UnauthorizedAccessException("No tiene permisos para consultar el historial.");
 
-        // 2. FILTRADO AUTOMÁTICO DE SUCURSAL
-        int? sIdFiltro = ejecutor.TienePermiso("sucursal_limit") ? (int?)ejecutor.SucursalId : null;
+        // Aplicamos la misma jerarquía para la visualización
+        int? sIdFiltro = null;
+        if (!ejecutor.TienePermiso("all") && ejecutor.TienePermiso("sucursal_limit"))
+        {
+            sIdFiltro = ejecutor.SucursalId;
+        }
 
         string sql = @"SELECT m.*, p.nombre as ProductoNombre, u.username as UsuarioNombre, s.nombre as SucursalNombre
                        FROM MOVIMIENTO_INVENTARIO m
@@ -78,7 +86,6 @@ public class InventarioFactory(string connectionString) : MasterDao(connectionSt
             parametros.Add(new SqlParameter("@pid", productoId.Value));
         }
 
-        // Aplicamos el blindaje si el usuario es limitado
         if (sIdFiltro.HasValue)
         {
             sql += " AND m.sucursal_id = @sid";
@@ -94,7 +101,6 @@ public class InventarioFactory(string connectionString) : MasterDao(connectionSt
         if (hasta.HasValue)
         {
             sql += " AND m.fecha <= @hasta";
-            // Normalización del fin del día (23:59:59)
             parametros.Add(new SqlParameter("@hasta", hasta.Value.Date.AddDays(1).AddSeconds(-1)));
         }
 

@@ -2,6 +2,9 @@
 using IntegraPro.AppLogic.Utils;
 using IntegraPro.DataAccess.Factory;
 using IntegraPro.DTO.Models;
+using System;
+using System.Collections.Generic;
+using System.Linq;
 
 namespace IntegraPro.AppLogic.Services;
 
@@ -18,7 +21,6 @@ public class ProformaService(
     {
         try
         {
-            // Validamos acceso general y que no sea solo lectura
             ejecutor.ValidarAcceso("proformas");
             ejecutor.ValidarEscritura();
 
@@ -59,7 +61,6 @@ public class ProformaService(
         try
         {
             ejecutor.ValidarAcceso("proformas");
-            // Filtramos la lista general por cliente
             var lista = _factory.ListarProformas(string.Empty, ejecutor)
                                 .Where(x => x.ClienteId == clienteId).ToList();
 
@@ -85,36 +86,22 @@ public class ProformaService(
     {
         try
         {
-            // 1. Seguridad de doble nivel (Acceso a ventas + No ser solo lectura)
+            // 1. Validaciones de Seguridad Base
             ejecutor.ValidarAcceso("ventas");
             ejecutor.ValidarEscritura();
 
-            // 2. Validación preventiva de stock (Fail-Fast)
-            var empresa = _configFactory.ObtenerEmpresa(ejecutor);
-            bool permitirNegativo = empresa?.PermitirStockNegativo ?? false;
-
-            if (!permitirNegativo)
-            {
-                var proforma = _factory.ObtenerPorId(id, ejecutor);
-                if (proforma == null) return new ApiResponse<string>(false, "La proforma no existe.");
-
-                foreach (var det in proforma.Detalles)
-                {
-                    // Validamos stock específicamente en la sucursal del ejecutor
-                    var producto = _prodFactory.GetById(det.ProductoId, ejecutor);
-                    if (producto != null && producto.Existencia < det.Cantidad)
-                    {
-                        return new ApiResponse<string>(false,
-                            $"Stock insuficiente para '{producto.Nombre}'. Disponible: {producto.Existencia:N2}");
-                    }
-                }
-            }
-
-            // 3. Conversión atómica en Base de Datos
+            // 2. Ejecución del Proceso en DB
+            // Eliminamos la validación manual de C# porque causaba errores de desfase.
+            // Ahora confiamos en el THROW que programamos en el Procedimiento/SQL de la Factory,
+            // el cual es 100% preciso al consultar la tabla PRODUCTO_SUCURSAL en tiempo real.
             string consecutivo = _factory.ConvertirAFactura(id, medio, ejecutor);
+
             return new ApiResponse<string>(true, $"Factura {consecutivo} generada con éxito.", consecutivo);
         }
-        catch (UnauthorizedAccessException ex) { return new ApiResponse<string>(false, ex.Message); }
-        catch (Exception ex) { return new ApiResponse<string>(false, $"Error en facturación: {ex.Message}"); }
+        catch (Exception ex)
+        {
+            // Si el SQL lanza un THROW por falta de stock, caerá aquí con el mensaje correcto.
+            return new ApiResponse<string>(false, ex.Message);
+        }
     }
 }

@@ -9,19 +9,19 @@ namespace IntegraPro.DataAccess.Factory;
 
 public class ProformaFactory(string connectionString) : MasterDao(connectionString)
 {
-    // Capturamos la cadena para evitar el conflicto del Primary Constructor en C# 12
     private readonly string _connectionString = connectionString;
 
-    // 1. CREAR PROFORMA CON REGLAS DE NEGOCIO
     public int CrearProforma(ProformaEncabezadoDTO p, UsuarioDTO ejecutor)
     {
         ejecutor.ValidarAcceso("proformas");
         ejecutor.ValidarEscritura();
 
-        if (ejecutor.TienePermiso("sucursal_limit"))
+        // Si el usuario tiene restricción de sucursal, forzamos la sucursal del usuario
+        if (!ejecutor.TienePermiso("all") && ejecutor.TienePermiso("sucursal_limit"))
+        {
             p.SucursalId = ejecutor.SucursalId;
+        }
 
-        // Pasamos el ejecutor a la sub-factory para validar permisos de config
         var configFact = new ConfiguracionFactory(_connectionString);
         var empresa = configFact.ObtenerEmpresa(ejecutor);
         bool esTradicional = empresa?.TipoRegimen?.Equals("Tradicional", StringComparison.OrdinalIgnoreCase) ?? true;
@@ -29,6 +29,7 @@ public class ProformaFactory(string connectionString) : MasterDao(connectionStri
         decimal totalNetoAcumulado = 0;
         decimal totalIVAAcumulado = 0;
 
+        // Cálculo de totales línea por línea
         foreach (var det in p.Detalles)
         {
             string sqlValidar = "SELECT costo_actual, porcentaje_impuesto FROM PRODUCTO WHERE id = @prodid";
@@ -61,7 +62,7 @@ public class ProformaFactory(string connectionString) : MasterDao(connectionStri
         var parametrosEnc = new[] {
             new SqlParameter("@cid", p.ClienteId == 0 ? DBNull.Value : p.ClienteId),
             new SqlParameter("@sid", p.SucursalId),
-            new SqlParameter("@fvenc", p.FechaVencimiento),
+            new SqlParameter("@fvenc", p.FechaVencimiento == DateTime.MinValue ? DateTime.Now.AddDays(30) : p.FechaVencimiento),
             new SqlParameter("@tneto", totalNetoAcumulado),
             new SqlParameter("@tiva", totalIVAAcumulado),
             new SqlParameter("@total", totalNetoAcumulado + totalIVAAcumulado)
@@ -89,7 +90,6 @@ public class ProformaFactory(string connectionString) : MasterDao(connectionStri
         return idGenerado;
     }
 
-    // 2. CONVERTIR A FACTURA (Transacción SQL Atómica)
     public string ConvertirAFactura(int proformaId, string medioPago, UsuarioDTO ejecutor)
     {
         ejecutor.ValidarAcceso("ventas");
@@ -100,10 +100,11 @@ public class ProformaFactory(string connectionString) : MasterDao(connectionStri
         BEGIN TRY
             DECLARE @clienteId INT, @sucursalId INT, @totalNeto DECIMAL(18,2), @totalImpuesto DECIMAL(18,2), 
                     @totalComprobante DECIMAL(18,2), @facturaId INT, @estadoActual NVARCHAR(20),
-                    @permitirNegativo BIT;
+                    @permitirNegativo BIT, @stockActual DECIMAL(18,2), @prodNombreErr NVARCHAR(200);
 
             DECLARE @consecutivo NVARCHAR(50) = 'FAC-' + CAST(NEXT VALUE FOR Seq_Consecutivos AS NVARCHAR(20));
 
+            -- 1. Obtener datos de la proforma
             SELECT @clienteId = cliente_id, @sucursalId = sucursal_id, @totalNeto = total_neto, 
                    @totalImpuesto = total_impuesto, @totalComprobante = total, @estadoActual = estado 
             FROM PROFORMA_ENCABEZADO WHERE id = @profId;
@@ -112,21 +113,28 @@ public class ProformaFactory(string connectionString) : MasterDao(connectionStri
 
             IF @clienteId IS NULL THROW 50000, 'La proforma no existe.', 1;
             IF @estadoActual <> 'Pendiente' THROW 50002, 'Solo se pueden facturar proformas Pendientes.', 1;
-            IF @sucursalLimit = 1 AND @sucursalId <> @userSucId THROW 50003, 'Acceso denegado: Proforma de otra sucursal.', 1;
+            
+            -- Validación de seguridad
+            IF @esAdmin = 0 AND @sucursalLimit = 1 AND @sucursalId <> @userSucId 
+                THROW 50003, 'Acceso denegado: Esta proforma pertenece a otra sucursal.', 1;
 
+            -- 2. VALIDACIÓN DE STOCK EN SQL
             IF ISNULL(@permitirNegativo, 0) = 0
             BEGIN
-                IF EXISTS (
-                    SELECT 1 
-                    FROM PROFORMA_DETALLE d
-                    JOIN PRODUCTO_SUCURSAL ps ON d.producto_id = ps.producto_id
-                    WHERE d.proforma_id = @profId AND ps.sucursal_id = @sucursalId AND ps.existencia < d.cantidad
-                )
+                SELECT TOP 1 @prodNombreErr = p.nombre, @stockActual = ISNULL(ps.existencia, 0)
+                FROM PROFORMA_DETALLE d
+                INNER JOIN PRODUCTO p ON d.producto_id = p.id
+                LEFT JOIN PRODUCTO_SUCURSAL ps ON d.producto_id = ps.producto_id AND ps.sucursal_id = @sucursalId
+                WHERE d.proforma_id = @profId AND ISNULL(ps.existencia, 0) < d.cantidad;
+
+                IF @prodNombreErr IS NOT NULL
                 BEGIN
-                    THROW 50005, 'Stock insuficiente en la sucursal actual.', 1;
+                    DECLARE @msg NVARCHAR(300) = 'Stock insuficiente de ' + @prodNombreErr + ' en Sucursal ' + CAST(@sucursalId AS NVARCHAR) + '. Disponible: ' + CAST(@stockActual AS NVARCHAR);
+                    THROW 50005, @msg, 1;
                 END
             END
 
+            -- 3. Crear el encabezado de factura
             INSERT INTO FACTURA_ENCABEZADO (cliente_id, sucursal_id, usuario_id, consecutivo, clave_numerica, 
                                           total_neto, total_descuento, total_impuesto, total_comprobante, medio_pago, 
                                           estado_hacienda, condicion_venta, fecha)
@@ -135,14 +143,17 @@ public class ProformaFactory(string connectionString) : MasterDao(connectionStri
             
             SET @facturaId = SCOPE_IDENTITY();
 
+            -- 4. Copiar detalles
             INSERT INTO FACTURA_DETALLE (factura_id, producto_id, cantidad, precio_unitario, porcentaje_descuento, monto_descuento, monto_impuesto, total_linea)
             SELECT @facturaId, d.producto_id, d.cantidad, d.precio_unitario, 0, 0, d.monto_impuesto, d.total_linea
             FROM PROFORMA_DETALLE d WHERE d.proforma_id = @profId;
 
+            -- 5. Generar rebajos de inventario
             INSERT INTO MOVIMIENTO_INVENTARIO (producto_id, usuario_id, sucursal_id, fecha, tipo_movimiento, cantidad, documento_referencia, notas)
             SELECT d.producto_id, @usuarioId, @sucursalId, GETDATE(), 'SALIDA', d.cantidad, @consecutivo, 'Fact. desde Proforma #' + CAST(@profId AS NVARCHAR(10))
             FROM PROFORMA_DETALLE d WHERE d.proforma_id = @profId;
 
+            -- 6. Actualizar estado
             UPDATE PROFORMA_ENCABEZADO SET estado = 'Facturada' WHERE id = @profId;
 
             COMMIT TRANSACTION;
@@ -158,6 +169,7 @@ public class ProformaFactory(string connectionString) : MasterDao(connectionStri
             new SqlParameter("@usuarioId", ejecutor.Id),
             new SqlParameter("@userSucId", ejecutor.SucursalId),
             new SqlParameter("@sucursalLimit", ejecutor.TienePermiso("sucursal_limit") ? 1 : 0),
+            new SqlParameter("@esAdmin", ejecutor.TienePermiso("all") ? 1 : 0),
             new SqlParameter("@medioPago", medioPago)
         };
 
@@ -165,7 +177,6 @@ public class ProformaFactory(string connectionString) : MasterDao(connectionStri
         return result?.ToString() ?? string.Empty;
     }
 
-    // 3. ANULAR PROFORMA
     public void AnularProforma(int id, UsuarioDTO ejecutor)
     {
         ejecutor.ValidarAcceso("proformas");
@@ -174,7 +185,7 @@ public class ProformaFactory(string connectionString) : MasterDao(connectionStri
         string sql = "UPDATE PROFORMA_ENCABEZADO SET estado = 'Anulada' WHERE id = @id AND estado = 'Pendiente'";
         var pars = new List<SqlParameter> { new SqlParameter("@id", id) };
 
-        if (ejecutor.TienePermiso("sucursal_limit"))
+        if (!ejecutor.TienePermiso("all") && ejecutor.TienePermiso("sucursal_limit"))
         {
             sql += " AND sucursal_id = @sid";
             pars.Add(new SqlParameter("@sid", ejecutor.SucursalId));
@@ -182,15 +193,15 @@ public class ProformaFactory(string connectionString) : MasterDao(connectionStri
 
         int filas = ExecuteNonQuery(sql, pars.ToArray(), false);
         if (filas == 0)
-            throw new Exception("No se pudo anular la proforma. Ya no está pendiente o no pertenece a su sucursal.");
+            throw new Exception("No se pudo anular la proforma (ya está facturada o no pertenece a su sucursal).");
     }
 
-    // 4. CONSULTAS
     public List<ProformaEncabezadoDTO> ListarProformas(string filtro, UsuarioDTO ejecutor)
     {
         ejecutor.ValidarAcceso("proformas");
 
-        string sql = @"SELECT P.*, ISNULL(C.nombre, 'CLIENTE CONTADO') as ClienteNombre, C.identificacion as ClienteIdentificacion 
+        string sql = @"SELECT P.*, ISNULL(C.nombre, 'CLIENTE CONTADO') as ClienteNombre, 
+                       C.identificacion as ClienteIdentificacion 
                        FROM PROFORMA_ENCABEZADO P
                        LEFT JOIN CLIENTE C ON P.cliente_id = C.id
                        WHERE 1=1";
@@ -203,7 +214,7 @@ public class ProformaFactory(string connectionString) : MasterDao(connectionStri
             pars.Add(new SqlParameter("@f", $"%{filtro}%"));
         }
 
-        if (ejecutor.TienePermiso("sucursal_limit"))
+        if (!ejecutor.TienePermiso("all") && ejecutor.TienePermiso("sucursal_limit"))
         {
             sql += " AND P.sucursal_id = @sid";
             pars.Add(new SqlParameter("@sid", ejecutor.SucursalId));
@@ -221,13 +232,16 @@ public class ProformaFactory(string connectionString) : MasterDao(connectionStri
     {
         ejecutor.ValidarAcceso("proformas");
 
-        string sql = @"SELECT P.*, ISNULL(C.nombre, 'CLIENTE CONTADO') as ClienteNombre 
+        string sql = @"SELECT P.*, ISNULL(C.nombre, 'CLIENTE CONTADO') as ClienteNombre,
+                       C.identificacion as ClienteIdentificacion 
                        FROM PROFORMA_ENCABEZADO P
                        LEFT JOIN CLIENTE C ON P.cliente_id = C.id
                        WHERE P.id = @id";
 
-        if (ejecutor.TienePermiso("sucursal_limit"))
+        if (!ejecutor.TienePermiso("all") && ejecutor.TienePermiso("sucursal_limit"))
+        {
             sql += " AND P.sucursal_id = " + ejecutor.SucursalId;
+        }
 
         var dt = ExecuteQuery(sql, new[] { new SqlParameter("@id", id) }, false);
         if (dt.Rows.Count == 0) return null;
@@ -240,7 +254,7 @@ public class ProformaFactory(string connectionString) : MasterDao(connectionStri
     private List<ProformaDetalleDTO> ObtenerDetallesProforma(int proformaId)
     {
         var lista = new List<ProformaDetalleDTO>();
-        string sql = @"SELECT D.*, P.nombre as ProductoNombre 
+        string sql = @"SELECT D.*, P.nombre as ProductoNombre, P.codigo_barras as ProductoCodigo 
                        FROM PROFORMA_DETALLE D 
                        JOIN PRODUCTO P ON D.producto_id = P.id 
                        WHERE D.proforma_id = @id";
@@ -251,9 +265,11 @@ public class ProformaFactory(string connectionString) : MasterDao(connectionStri
             lista.Add(new ProformaDetalleDTO
             {
                 ProductoId = (int)r["producto_id"],
+                ProductoCodigo = r["ProductoCodigo"].ToString(),
                 ProductoNombre = r["ProductoNombre"].ToString(),
                 Cantidad = (decimal)r["cantidad"],
                 PrecioUnitario = (decimal)r["precio_unitario"],
+                PorcentajeImpuesto = (decimal)r["porcentaje_impuesto"],
                 ImpuestoTotal = (decimal)r["monto_impuesto"],
                 TotalLineas = (decimal)r["total_linea"]
             });
@@ -268,6 +284,7 @@ public class ProformaFactory(string connectionString) : MasterDao(connectionStri
             Id = Convert.ToInt32(r["id"]),
             ClienteId = r["cliente_id"] == DBNull.Value ? 0 : Convert.ToInt32(r["cliente_id"]),
             ClienteNombre = r["ClienteNombre"].ToString(),
+            ClienteIdentificacion = r.Table.Columns.Contains("ClienteIdentificacion") ? r["ClienteIdentificacion"].ToString() : "",
             SucursalId = Convert.ToInt32(r["sucursal_id"]),
             TotalNeto = Convert.ToDecimal(r["total_neto"]),
             TotalImpuesto = Convert.ToDecimal(r["total_impuesto"]),

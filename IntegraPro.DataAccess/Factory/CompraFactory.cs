@@ -13,18 +13,13 @@ public class CompraFactory(string connectionString) : MasterDao(connectionString
 
     public void ProcesarCompra(CompraDTO compra, UsuarioDTO ejecutor)
     {
-        // === INTEGRACIÓN DE SEGURIDAD ROBUSTA (MODIFICADO PARA DIAGNÓSTICO) ===
-
-        // Si el diccionario de permisos está vacío, lanzamos un error detallado para saber qué está llegando
+        // === INTEGRACIÓN DE SEGURIDAD ROBUSTA ===
         if (ejecutor.Permisos == null || ejecutor.Permisos.Count == 0)
         {
             throw new UnauthorizedAccessException($"Acceso denegado: El sistema no detectó permisos cargados. (JSON: {ejecutor.PermisosJson})");
         }
 
-        // 1. Verificamos si es Admin o tiene el permiso específico
         bool tieneAcceso = ejecutor.TienePermiso("all") || ejecutor.TienePermiso("compras");
-
-        // 2. Verificamos la restricción de solo_lectura directamente en el diccionario
         bool esSoloLectura = ejecutor.Permisos.TryGetValue("solo_lectura", out bool sl) && sl;
 
         if (!tieneAcceso)
@@ -33,10 +28,13 @@ public class CompraFactory(string connectionString) : MasterDao(connectionString
         if (esSoloLectura)
             throw new UnauthorizedAccessException("Su usuario tiene restricciones de solo lectura y no puede realizar transacciones.");
 
-        // ==========================================
-
-        if (ejecutor.TienePermiso("sucursal_limit"))
+        // ASIGNACIÓN DE SUCURSAL: 
+        // Si el usuario es 'all', respetamos la sucursal que venga en el DTO (permitiendo compras inter-sucursales).
+        // Si NO es 'all' y tiene 'sucursal_limit', forzamos su propia sucursal.
+        if (!ejecutor.TienePermiso("all") && ejecutor.TienePermiso("sucursal_limit"))
+        {
             compra.SucursalId = ejecutor.SucursalId;
+        }
 
         using var conn = new SqlConnection(_connectionString);
         conn.Open();
@@ -131,9 +129,12 @@ public class CompraFactory(string connectionString) : MasterDao(connectionString
         var lista = new List<DeudaConsultaDTO>();
         using var conn = new SqlConnection(_connectionString);
 
-        string sucursalFilter = ejecutor.TienePermiso("sucursal_limit")
-            ? $" AND CompraId IN (SELECT id FROM COMPRA_ENCABEZADO WHERE sucursal_id = {ejecutor.SucursalId})"
-            : "";
+        // LÓGICA DE FILTRADO POR SUCURSAL
+        string sucursalFilter = "";
+        if (!ejecutor.TienePermiso("all") && ejecutor.TienePermiso("sucursal_limit"))
+        {
+            sucursalFilter = $" AND CompraId IN (SELECT id FROM COMPRA_ENCABEZADO WHERE sucursal_id = {ejecutor.SucursalId})";
+        }
 
         string sql = $@"SELECT * FROM VW_CONSULTA_DEUDAS 
                        WHERE (ProveedorCedula LIKE @f 
@@ -274,7 +275,8 @@ public class CompraFactory(string connectionString) : MasterDao(connectionString
 
             if (detalles.Count == 0) throw new Exception("Compra no encontrada o no es anulable.");
 
-            if (ejecutor.TienePermiso("sucursal_limit") && detalles[0].sId != ejecutor.SucursalId)
+            // Validamos sucursal solo si NO es administrador global
+            if (!ejecutor.TienePermiso("all") && ejecutor.TienePermiso("sucursal_limit") && detalles[0].sId != ejecutor.SucursalId)
                 throw new UnauthorizedAccessException("No puede anular compras de otra sucursal.");
 
             foreach (var det in detalles)
@@ -313,8 +315,11 @@ public class CompraFactory(string connectionString) : MasterDao(connectionString
     {
         var alertas = new List<AlertaPagoDTO>();
         string sql = "SELECT * FROM VW_ALERTA_CUENTAS_PAGAR_PROXIMAS";
-        if (ejecutor.TienePermiso("sucursal_limit"))
+
+        // Filtramos por sucursal solo si NO es 'all'
+        if (!ejecutor.TienePermiso("all") && ejecutor.TienePermiso("sucursal_limit"))
             sql += " WHERE sucursal_id = " + ejecutor.SucursalId;
+
         sql += " ORDER BY fecha_vencimiento ASC";
 
         var dt = ExecuteQuery(sql, null, false);
@@ -335,9 +340,12 @@ public class CompraFactory(string connectionString) : MasterDao(connectionString
 
     public ResumenCxpDTO ObtenerResumenGeneralCxp(UsuarioDTO ejecutor)
     {
-        string filter = ejecutor.TienePermiso("sucursal_limit")
-            ? $" AND C.compra_id IN (SELECT id FROM COMPRA_ENCABEZADO WHERE sucursal_id = {ejecutor.SucursalId})"
-            : "";
+        // El administrador global (all) ve el consolidado de todas las sucursales.
+        string filter = "";
+        if (!ejecutor.TienePermiso("all") && ejecutor.TienePermiso("sucursal_limit"))
+        {
+            filter = $" AND C.compra_id IN (SELECT id FROM COMPRA_ENCABEZADO WHERE sucursal_id = {ejecutor.SucursalId})";
+        }
 
         string sql = $@"SELECT 
                         SUM(saldo_pendiente) as TotalGlobal,

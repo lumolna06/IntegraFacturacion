@@ -78,7 +78,8 @@ builder.Services.AddScoped(sp => new AbonoFactory(connectionString));
 builder.Services.AddScoped(sp => new ProformaFactory(connectionString));
 
 // --- Capa de L�gica (Services) ---
-builder.Services.AddScoped<LicenciaService>();
+// --- Capa de L�gica (Services) ---
+builder.Services.AddScoped<IVentaService, VentaService>(); // Agregado para resolver el error 500
 builder.Services.AddScoped<IConfiguracionService, ConfiguracionService>();
 builder.Services.AddScoped<IUsuarioService, UsuarioService>();
 builder.Services.AddScoped<IProductoService, ProductoService>();
@@ -90,6 +91,7 @@ builder.Services.AddScoped<ICompraService, CompraService>();
 builder.Services.AddScoped<IProformaService, ProformaService>();
 builder.Services.AddScoped<IAbonoService, AbonoService>();
 builder.Services.AddScoped<ICajaService, CajaService>();
+builder.Services.AddScoped<LicenciaService>();
 builder.Services.AddScoped(sp => new XmlParserService(connectionString));
 
 // ==========================================
@@ -98,6 +100,11 @@ builder.Services.AddScoped(sp => new XmlParserService(connectionString));
 builder.Services.AddControllers(options =>
 {
     options.Filters.Add<LicenseFilter>();
+})
+.AddJsonOptions(options =>
+{
+    // Esta es la l�nea m�gica que resolver� tu problema:
+    options.JsonSerializerOptions.PropertyNameCaseInsensitive = true;
 });
 
 builder.Services.AddEndpointsApiExplorer();
@@ -166,60 +173,44 @@ app.Run();
 ﻿using Microsoft.AspNetCore.Mvc;
 using IntegraPro.AppLogic.Interfaces;
 using IntegraPro.DTO.Models;
+using Microsoft.AspNetCore.Authorization;
 
 namespace IntegraPro.API.Controllers;
 
 [Route("api/[controller]")]
 [ApiController]
-public class AbonosController(IAbonoService service) : ControllerBase
+[Authorize] // Importante: Asegura que el Token sea obligatorio
+public class AbonosController(IAbonoService service) : BaseController // Hereda de tu BaseController
 {
     private readonly IAbonoService _service = service;
 
     [HttpGet("buscar")]
     public IActionResult Buscar([FromQuery] string? filtro = null)
     {
-        var res = _service.BuscarCuentas(filtro, ObtenerEjecutor());
+        // Usamos UsuarioActual (la propiedad real de tu BaseController)
+        var res = _service.BuscarCuentas(filtro, UsuarioActual);
         return res.Result ? Ok(res) : BadRequest(res);
     }
 
     [HttpGet("dashboard/resumen")]
     public IActionResult Resumen()
     {
-        var res = _service.ObtenerResumenGeneral(ObtenerEjecutor());
+        var res = _service.ObtenerResumenGeneral(UsuarioActual);
         return res.Result ? Ok(res) : BadRequest(res);
     }
 
     [HttpPost("registrar/{clienteId}")]
     public IActionResult Registrar(int clienteId, [FromBody] AbonoDTO abono)
     {
-        var res = _service.ProcesarAbono(abono, clienteId, ObtenerEjecutor());
+        var res = _service.ProcesarAbono(abono, clienteId, UsuarioActual);
         return res.Result ? Ok(res) : BadRequest(res);
     }
 
     [HttpGet("historial/{cuentaId}")]
     public IActionResult Historial(int cuentaId)
     {
-        // ACTUALIZADO: Ahora pasamos ObtenerEjecutor() como requiere la interfaz
-        var res = _service.ObtenerHistorial(cuentaId, ObtenerEjecutor());
+        var res = _service.ObtenerHistorial(cuentaId, UsuarioActual);
         return res.Result ? Ok(res) : BadRequest(res);
-    }
-
-    private UsuarioDTO ObtenerEjecutor()
-    {
-        if (User.Identity?.IsAuthenticated == true)
-        {
-            return new UsuarioDTO
-            {
-                Id = int.Parse(User.FindFirst("id")?.Value ?? "0"),
-                RolId = int.Parse(User.FindFirst("rolId")?.Value ?? "0"),
-                SucursalId = int.Parse(User.FindFirst("sucursalId")?.Value ?? "0"),
-                // IMPORTANTE: Mapear los permisos del Token para que ValidarAcceso() funcione
-                PermisosJson = User.FindFirst("permisos")?.Value ?? "{}"
-            };
-        }
-
-        // Mock para desarrollo (Asegúrate de que este usuario tenga permisos en tu DB de prueba)
-        return new UsuarioDTO { Id = 3, RolId = 1, SucursalId = 1, PermisosJson = "{\"all\":true}" };
     }
 }.
  
@@ -230,25 +221,24 @@ public class AbonosController(IAbonoService service) : ControllerBase
 using IntegraPro.AppLogic.Utils;
 using IntegraPro.DTO.Models;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Authorization;
 
 namespace IntegraPro.API.Controllers;
 
 [ApiController]
 [Route("api/[controller]")]
-public class AuthController : ControllerBase
+// Heredamos de BaseController para usar 'UsuarioActual' en el registro
+public class AuthController(IUsuarioService usuarioService) : BaseController
 {
-    private readonly IUsuarioService _usuarioService;
-
-    public AuthController(IUsuarioService usuarioService)
-    {
-        _usuarioService = usuarioService;
-    }
+    private readonly IUsuarioService _usuarioService = usuarioService;
 
     [HttpPost("login")]
+    [AllowAnonymous] // El login SIEMPRE debe ser público
     public ActionResult<ApiResponse<UsuarioDTO>> Login([FromBody] LoginRequest request)
     {
-        // El Login no requiere ejecutor porque el usuario aún no se ha autenticado
+        // El Login no usa UsuarioActual porque el usuario apenas se está identificando
         var response = _usuarioService.Login(request.Username, request.Password);
+
         if (!response.Result)
             return BadRequest(response);
 
@@ -256,37 +246,17 @@ public class AuthController : ControllerBase
     }
 
     [HttpPost("register")]
+    [Authorize] // Solo usuarios autenticados (Admin) pueden registrar a otros
     public ActionResult<ApiResponse<bool>> Register([FromBody] UsuarioDTO usuario)
     {
-        // ERROR CORREGIDO: Ahora pasamos el ejecutor. 
-        // Si el registro es abierto (público), pasamos un objeto temporal o el mismo usuario.
-        // Si es administrativo, usamos ObtenerEjecutor().
-
-        var ejecutor = ObtenerEjecutor();
-        var response = _usuarioService.Registrar(usuario, ejecutor);
+        // Eliminamos ObtenerEjecutor() local y usamos UsuarioActual del BaseController
+        // Esto garantiza que el registro quede auditado con el ID del Admin real
+        var response = _usuarioService.Registrar(usuario, UsuarioActual);
 
         if (!response.Result)
             return BadRequest(response);
 
         return Ok(response);
-    }
-
-    /// <summary>
-    /// Extrae el usuario que realiza la petición.
-    /// </summary>
-    private UsuarioDTO ObtenerEjecutor()
-    {
-        if (User.Identity?.IsAuthenticated == true)
-        {
-            return new UsuarioDTO
-            {
-                Id = int.Parse(User.FindFirst("id")?.Value ?? "0"),
-                RolId = int.Parse(User.FindFirst("rolId")?.Value ?? "0"),
-                SucursalId = int.Parse(User.FindFirst("sucursalId")?.Value ?? "0")
-            };
-        }
-        // Usuario por defecto para permitir el primer registro (Admin) o si no hay login aún
-        return new UsuarioDTO { Id = 0, RolId = 1, SucursalId = 1 };
     }
 }
 
@@ -298,7 +268,8 @@ public record LoginRequest(string Username, string Password);.
 ﻿using Microsoft.AspNetCore.Mvc;
 using IntegraPro.DTO.Models;
 using System.Security.Claims;
-using System.Diagnostics; // Necesario para Debug.WriteLine
+using System.Diagnostics;
+using System.Linq;
 
 namespace IntegraPro.API.Controllers;
 
@@ -314,38 +285,51 @@ public class BaseController : ControllerBase
             // Verificamos si hay un token válido y el usuario está autenticado
             if (User.Identity?.IsAuthenticated == true)
             {
-                // Extraemos los valores de los claims
-                // Usamos tanto el tipo estándar como el nombre literal por seguridad
-                var userIdClaim = User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? User.FindFirst("nameid")?.Value ?? "0";
-                var rolIdClaim = User.FindFirst("RolId")?.Value ?? "0";
-                var sucursalIdClaim = User.FindFirst("SucursalId")?.Value ?? "0";
-                var permisosRaw = User.FindFirst("Permisos")?.Value;
+                // Obtenemos la lista de claims una sola vez para mejorar el rendimiento
+                var claims = User.Claims.ToList();
+
+                // Buscamos los valores de forma insensible a mayúsculas (Case-Insensitive)
+                // Esto evita que el sistema falle si el token trae "id" pero buscamos "Id"
+                var userIdStr = claims.FirstOrDefault(c => c.Type.Equals("id", StringComparison.OrdinalIgnoreCase))?.Value
+                                ?? User.FindFirst(ClaimTypes.NameIdentifier)?.Value
+                                ?? "0";
+
+                var rolIdStr = claims.FirstOrDefault(c => c.Type.Equals("rolId", StringComparison.OrdinalIgnoreCase))?.Value
+                               ?? "0";
+
+                var sucursalIdStr = claims.FirstOrDefault(c => c.Type.Equals("sucursalId", StringComparison.OrdinalIgnoreCase))?.Value
+                                    ?? "0";
+
+                var permisosRaw = claims.FirstOrDefault(c => c.Type.Equals("permisos", StringComparison.OrdinalIgnoreCase))?.Value;
 
                 // --- BLOQUE DE DEPURACIÓN EN CONSOLA ---
-                // Revisa la ventana "Salida" (Output) de Visual Studio mientras ejecutas
-                Debug.WriteLine("========================================");
-                Debug.WriteLine($"[AUTH DEBUG] Usuario: {User.Identity.Name}");
-                Debug.WriteLine($"[AUTH DEBUG] ID Extraído: {userIdClaim}");
-                Debug.WriteLine($"[AUTH DEBUG] Permisos RAW: {permisosRaw}");
-                Debug.WriteLine("========================================");
+                Debug.WriteLine("================ AUTH DEBUG START ================");
+                Debug.WriteLine($"[USUARIO]: {User.Identity.Name}");
+                Debug.WriteLine($"[ID]: {userIdStr}");
+                Debug.WriteLine($"[ROL]: {rolIdStr}");
+                Debug.WriteLine($"[SUCURSAL]: {sucursalIdStr}");
+                Debug.WriteLine($"[PERMISOS RAW]: {permisosRaw}");
 
-                var usuario = new UsuarioDTO
+                // Tip: Imprimimos todos los claims si permisosRaw llega nulo para ver qué nombres traen
+                if (string.IsNullOrEmpty(permisosRaw))
                 {
-                    Id = int.Parse(userIdClaim),
-                    RolId = int.Parse(rolIdClaim),
-                    SucursalId = int.Parse(sucursalIdClaim),
-                    Username = User.Identity.Name ?? "Sin nombre",
+                    Debug.WriteLine("[WARN] No se encontró el claim 'permisos'. Claims disponibles:");
+                    foreach (var c in claims) Debug.WriteLine($" -> {c.Type}: {c.Value}");
+                }
+                Debug.WriteLine("================= AUTH DEBUG END =================");
 
-                    // Al asignar PermisosJson, el setter del DTO (con la limpieza que pusimos)
-                    // convertirá el string escapado en el diccionario real de permisos.
+                return new UsuarioDTO
+                {
+                    Id = int.Parse(userIdStr),
+                    RolId = int.Parse(rolIdStr),
+                    SucursalId = int.Parse(sucursalIdStr),
+                    Username = User.Identity.Name ?? "Sin nombre",
+                    // Al asignar PermisosJson, el setter en UsuarioDTO hará el resto
                     PermisosJson = permisosRaw ?? "{}"
                 };
-
-                return usuario;
             }
 
-            // Fallback: Si no hay token o no está autenticado, devolvemos un usuario anónimo sin permisos
-            // Esto evita errores de referencia nula en los controladores.
+            // Fallback para usuarios no autenticados
             return new UsuarioDTO
             {
                 Id = 0,
@@ -364,52 +348,37 @@ public class BaseController : ControllerBase
 ﻿using Microsoft.AspNetCore.Mvc;
 using IntegraPro.AppLogic.Interfaces;
 using IntegraPro.DTO.Models;
+using Microsoft.AspNetCore.Authorization;
 
 namespace IntegraPro.API.Controllers;
 
 [Route("api/[controller]")]
 [ApiController]
-public class CajaController(ICajaService service) : ControllerBase
+[Authorize] // Bloquea el acceso si no hay un token JWT válido
+public class CajaController(ICajaService service) : BaseController // Herencia aplicada
 {
     private readonly ICajaService _service = service;
 
     [HttpPost("abrir")]
     public IActionResult Abrir([FromBody] CajaAperturaDTO apertura)
     {
-        var res = _service.AbrirCaja(apertura, ObtenerEjecutor());
+        // Usamos la propiedad UsuarioActual de BaseController
+        var res = _service.AbrirCaja(apertura, UsuarioActual);
         return res.Result ? Ok(res) : BadRequest(res);
     }
 
     [HttpPost("cerrar")]
     public IActionResult Cerrar([FromBody] CajaCierreDTO cierre)
     {
-        var res = _service.CerrarCaja(cierre, ObtenerEjecutor());
+        var res = _service.CerrarCaja(cierre, UsuarioActual);
         return res.Result ? Ok(res) : BadRequest(res);
     }
 
     [HttpGet("historial")]
     public IActionResult GetHistorial()
     {
-        var res = _service.ObtenerHistorial(ObtenerEjecutor());
+        var res = _service.ObtenerHistorial(UsuarioActual);
         return res.Result ? Ok(res) : BadRequest(res);
-    }
-
-    private UsuarioDTO ObtenerEjecutor()
-    {
-        if (User.Identity?.IsAuthenticated == true)
-        {
-            return new UsuarioDTO
-            {
-                Id = int.Parse(User.FindFirst("id")?.Value ?? "0"),
-                RolId = int.Parse(User.FindFirst("rolId")?.Value ?? "0"),
-                SucursalId = int.Parse(User.FindFirst("sucursalId")?.Value ?? "0"),
-                // IMPORTANTE: Sin esto, ValidarAcceso("caja") siempre fallará
-                PermisosJson = User.FindFirst("permisos")?.Value ?? "{}"
-            };
-        }
-
-        // Mock para desarrollo (Asegúrate de que este usuario tenga {"caja": true} en su JSON)
-        return new UsuarioDTO { Id = 3, RolId = 1, SucursalId = 1, PermisosJson = "{\"all\":true}" };
     }
 }.
  
@@ -419,53 +388,30 @@ public class CajaController(ICajaService service) : ControllerBase
 ﻿using IntegraPro.AppLogic.Interfaces;
 using IntegraPro.DTO.Models;
 using Microsoft.AspNetCore.Mvc;
-using System.Security.Claims;
+using Microsoft.AspNetCore.Authorization;
 
 namespace IntegraPro.API.Controllers;
 
 [ApiController]
 [Route("api/[controller]")]
-public class CategoriaController(ICategoriaService service) : ControllerBase
+[Authorize] // Asegura que las categorías solo sean accesibles con Token
+public class CategoriaController(ICategoriaService service) : BaseController // Herencia aplicada
 {
     private readonly ICategoriaService _service = service;
 
     [HttpGet]
     public IActionResult Get()
     {
-        // ACTUALIZADO: Ahora pasamos el ejecutor para validar acceso al módulo
-        var response = _service.ObtenerTodas(ObtenerEjecutor());
+        // Usamos la propiedad 'UsuarioActual' heredada de BaseController
+        var response = _service.ObtenerTodas(UsuarioActual);
         return response.Result ? Ok(response) : BadRequest(response);
     }
 
     [HttpPost]
     public IActionResult Post([FromBody] CategoriaDTO dto)
     {
-        var response = _service.Crear(dto, ObtenerEjecutor());
+        var response = _service.Crear(dto, UsuarioActual);
         return response.Result ? Ok(response) : BadRequest(response);
-    }
-
-    private UsuarioDTO ObtenerEjecutor()
-    {
-        if (User.Identity?.IsAuthenticated == true)
-        {
-            return new UsuarioDTO
-            {
-                Id = int.Parse(User.FindFirst("id")?.Value ?? "0"),
-                RolId = int.Parse(User.FindFirst("rolId")?.Value ?? "0"),
-                SucursalId = int.Parse(User.FindFirst("sucursalId")?.Value ?? "0"),
-                // IMPORTANTE: Mapeo de permisos para que ValidarAcceso() funcione
-                PermisosJson = User.FindFirst("permisos")?.Value ?? "{}"
-            };
-        }
-
-        // Mock para desarrollo (recuerda borrarlo o comentarlo al pasar a producción)
-        return new UsuarioDTO
-        {
-            Id = 1,
-            RolId = 1,
-            SucursalId = 1,
-            PermisosJson = "{\"all\":true}"
-        };
     }
 }.
  
@@ -475,26 +421,29 @@ public class CategoriaController(ICategoriaService service) : ControllerBase
 ﻿using Microsoft.AspNetCore.Mvc;
 using IntegraPro.AppLogic.Interfaces;
 using IntegraPro.DTO.Models;
+using Microsoft.AspNetCore.Authorization;
 
 namespace IntegraPro.API.Controllers;
 
 [Route("api/[controller]")]
 [ApiController]
-public class ClienteController(IClienteService service) : ControllerBase
+[Authorize] // Protege todos los endpoints del controlador
+public class ClienteController(IClienteService service) : BaseController // Hereda de BaseController
 {
     private readonly IClienteService _service = service;
 
     [HttpGet]
     public IActionResult Get()
     {
-        var response = _service.ObtenerTodos(ObtenerEjecutor());
+        // Usamos UsuarioActual de la clase base
+        var response = _service.ObtenerTodos(UsuarioActual);
         return response.Result ? Ok(response) : BadRequest(response);
     }
 
     [HttpPost]
     public IActionResult Post([FromBody] ClienteDTO cliente)
     {
-        var response = _service.Crear(cliente, ObtenerEjecutor());
+        var response = _service.Crear(cliente, UsuarioActual);
 
         if (response.Result)
             return Ok(new { success = true, idCreated = response.Data, message = response.Message });
@@ -505,7 +454,7 @@ public class ClienteController(IClienteService service) : ControllerBase
     [HttpPut]
     public IActionResult Put([FromBody] ClienteDTO cliente)
     {
-        var response = _service.Actualizar(cliente, ObtenerEjecutor());
+        var response = _service.Actualizar(cliente, UsuarioActual);
 
         if (response.Result)
             return Ok(new { success = true, message = response.Message });
@@ -516,30 +465,13 @@ public class ClienteController(IClienteService service) : ControllerBase
     [HttpGet("buscar/{identificacion}")]
     public IActionResult GetByIdentificacion(string identificacion)
     {
-        var response = _service.BuscarPorIdentificacion(identificacion);
+        // IMPORTANTE: Se añade UsuarioActual para que el Service valide permisos de lectura
+        var response = _service.BuscarPorIdentificacion(identificacion, UsuarioActual);
 
         if (!response.Result)
             return NotFound(new { success = false, message = response.Message });
 
         return Ok(new { success = true, data = response.Data });
-    }
-
-    private UsuarioDTO ObtenerEjecutor()
-    {
-        if (User.Identity?.IsAuthenticated == true)
-        {
-            return new UsuarioDTO
-            {
-                Id = int.Parse(User.FindFirst("id")?.Value ?? "0"),
-                RolId = int.Parse(User.FindFirst("rolId")?.Value ?? "0"),
-                SucursalId = int.Parse(User.FindFirst("sucursalId")?.Value ?? "0"),
-                // FUNDAMENTAL: Extraer el JSON de permisos del Token
-                PermisosJson = User.FindFirst("permisos")?.Value ?? "{}"
-            };
-        }
-
-        // Mock para desarrollo (Asegúrate que tenga acceso a "clientes")
-        return new UsuarioDTO { Id = 1, RolId = 1, SucursalId = 1, PermisosJson = "{\"all\":true}" };
     }
 }.
  
@@ -549,75 +481,29 @@ public class ClienteController(IClienteService service) : ControllerBase
 ﻿using Microsoft.AspNetCore.Mvc;
 using IntegraPro.AppLogic.Interfaces;
 using IntegraPro.DTO.Models;
-using System.Security.Claims;
-using System.Text.Json;
+using Microsoft.AspNetCore.Authorization;
 
 namespace IntegraPro.API.Controllers;
 
 [ApiController]
 [Route("api/[controller]")]
-public class CompraController(ICompraService compraService) : ControllerBase
+[Authorize] // Protege todo el módulo de compras
+public class CompraController(ICompraService compraService) : BaseController // Hereda de tu BaseController real
 {
     private readonly ICompraService _service = compraService;
-
-    private UsuarioDTO UsuarioActual
-    {
-        get
-        {
-            // 1. Intentamos obtener los datos del Token
-            var identity = User.Identity as ClaimsIdentity;
-
-            var usuario = new UsuarioDTO
-            {
-                Id = int.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier) ?? "0"),
-                RolId = int.Parse(User.FindFirstValue("RolId") ?? "0"),
-                SucursalId = int.Parse(User.FindFirstValue("SucursalId") ?? "0"),
-                Username = User.Identity?.Name ?? "Invitado"
-            };
-
-            // 2. Intentamos cargar los permisos desde el JSON del Token
-            var permisosJson = User.FindFirstValue("Permisos");
-            if (!string.IsNullOrEmpty(permisosJson))
-            {
-                usuario.PermisosJson = permisosJson;
-                try
-                {
-                    usuario.Permisos = JsonSerializer.Deserialize<Dictionary<string, bool>>(permisosJson)
-                                       ?? new Dictionary<string, bool>();
-                }
-                catch
-                {
-                    usuario.Permisos = new Dictionary<string, bool>();
-                }
-            }
-
-            // === LÍNEA DE EMERGENCIA ===
-            // Si el token dice que eres Rol 1 (Admin), forzamos el permiso "all" 
-            // Esto descarta problemas de lectura del JSON.
-            if (usuario.RolId == 1)
-            {
-                usuario.Permisos["all"] = true;
-            }
-
-            return usuario;
-        }
-    }
 
     [HttpPost]
     public IActionResult Post(CompraDTO compra)
     {
         try
         {
-            // Verificación visual en la consola de depuración
-            Console.WriteLine($"Procesando compra - Usuario: {UsuarioActual.Username}, Rol: {UsuarioActual.RolId}, Admin: {UsuarioActual.TienePermiso("all")}");
-
+            // Usamos UsuarioActual del BaseController (ya trae claims y permisos)
             _service.RegistrarNuevaCompra(compra, UsuarioActual);
             return Ok(new { mensaje = "Compra procesada exitosamente." });
         }
         catch (UnauthorizedAccessException ex)
         {
-            // Capturamos específicamente el error de permisos para dar más detalle
-            return StatusCode(403, new { error = ex.Message, detalle = "El Factory rechazó los permisos del usuario." });
+            return StatusCode(403, new { error = ex.Message, detalle = "Acceso denegado al módulo de compras." });
         }
         catch (Exception ex)
         {
@@ -672,6 +558,7 @@ public class CompraController(ICompraService compraService) : ControllerBase
     {
         try
         {
+            // Nota: Aquí podrías pasar UsuarioActual si el service requiere filtrar por sucursal
             var historial = _service.ListarHistorialDePagos(compraId);
             return Ok(historial);
         }
@@ -716,63 +603,38 @@ public class CompraController(ICompraService compraService) : ControllerBase
 ﻿using IntegraPro.AppLogic.Interfaces;
 using IntegraPro.DTO.Models;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Authorization;
 
 namespace IntegraPro.API.Controllers;
 
 [ApiController]
 [Route("api/[controller]")]
-public class ConfiguracionController(IConfiguracionService service) : ControllerBase
+[Authorize] // Bloqueo global: nadie ve la config sin Token
+public class ConfiguracionController(IConfiguracionService service) : BaseController // Hereda de BaseController
 {
     private readonly IConfiguracionService _service = service;
 
-    // GET api/configuracion/empresa
     [HttpGet("empresa")]
     public IActionResult GetEmpresa()
     {
-        // ACTUALIZADO: Pasamos el ejecutor para validar permiso de lectura 'config'
-        var res = _service.ObtenerDatosEmpresa(ObtenerEjecutor());
+        // Usamos UsuarioActual de la clase base (elimina el Mock de Id=1)
+        var res = _service.ObtenerDatosEmpresa(UsuarioActual);
         return res.Result ? Ok(res) : NotFound(res);
     }
 
-    // POST api/configuracion/empresa
     [HttpPost("empresa")]
     public IActionResult SaveEmpresa([FromBody] EmpresaDTO dto)
     {
-        var res = _service.ActualizarEmpresa(dto, ObtenerEjecutor());
+        var res = _service.ActualizarEmpresa(dto, UsuarioActual);
         return res.Result ? Ok(res) : BadRequest(res);
     }
 
-    // PUT api/configuracion/empresa/1
     [HttpPut("empresa/{id}")]
     public IActionResult UpdateEmpresa(int id, [FromBody] EmpresaDTO dto)
     {
         dto.Id = id;
-        var res = _service.ActualizarEmpresa(dto, ObtenerEjecutor());
+        var res = _service.ActualizarEmpresa(dto, UsuarioActual);
         return res.Result ? Ok(res) : BadRequest(res);
-    }
-
-    private UsuarioDTO ObtenerEjecutor()
-    {
-        if (User.Identity?.IsAuthenticated == true)
-        {
-            return new UsuarioDTO
-            {
-                Id = int.Parse(User.FindFirst("id")?.Value ?? "0"),
-                RolId = int.Parse(User.FindFirst("rolId")?.Value ?? "0"),
-                SucursalId = int.Parse(User.FindFirst("sucursalId")?.Value ?? "0"),
-                // USAMOS PermisosJson para que el DTO construya el diccionario automáticamente
-                PermisosJson = User.FindFirst("permisos")?.Value ?? "{}"
-            };
-        }
-
-        // Mock para desarrollo (recuerda borrarlo o comentarlo al publicar)
-        return new UsuarioDTO
-        {
-            Id = 1,
-            RolId = 1,
-            SucursalId = 1,
-            PermisosJson = "{\"config\":true,\"all\":true}"
-        };
     }
 }.
  
@@ -783,12 +645,14 @@ public class ConfiguracionController(IConfiguracionService service) : Controller
 using IntegraPro.AppLogic.Utils;
 using IntegraPro.DTO.Models;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Authorization;
 
 namespace IntegraPro.API.Controllers;
 
 [ApiController]
 [Route("api/[controller]")]
-public class InventarioController(IInventarioService service) : ControllerBase
+[Authorize] // Bloqueo de seguridad: Requiere Token JWT
+public class InventarioController(IInventarioService service) : BaseController // Herencia aplicada
 {
     private readonly IInventarioService _service = service;
 
@@ -799,15 +663,9 @@ public class InventarioController(IInventarioService service) : ControllerBase
     [HttpPost]
     public IActionResult Post([FromBody] MovimientoInventarioDTO dto)
     {
-        // 1. Extraer el ejecutor directamente del Token JWT (Seguridad garantizada)
-        var ejecutor = ObtenerEjecutor();
-
-        if (ejecutor == null)
-            return Unauthorized(new ApiResponse<bool>(false, "Sesión inválida o expirada.", false));
-
-        // 2. Llamar al servicio. El Service y Factory se encargarán de forzar 
-        // la sucursal y validar permisos de 'inventario' y 'solo_lectura'.
-        var result = _service.Registrar(dto, ejecutor);
+        // Usamos 'UsuarioActual' del BaseController. 
+        // Si el token es inválido, el BaseController ya maneja el fallback o [Authorize] rebota la petición.
+        var result = _service.Registrar(dto, UsuarioActual);
 
         return result.Result ? Ok(result) : BadRequest(result);
     }
@@ -819,36 +677,10 @@ public class InventarioController(IInventarioService service) : ControllerBase
     [HttpPost("producir")]
     public IActionResult Producir([FromQuery] int productoId, [FromQuery] decimal cantidad)
     {
-        var ejecutor = ObtenerEjecutor();
-
-        if (ejecutor == null)
-            return Unauthorized(new ApiResponse<bool>(false, "Contexto de usuario inválido.", false));
-
-        // Ejecutar la lógica de producción. 
-        // Se rebajará stock de la sucursal del ejecutor.
-        var result = _service.ProcesarProduccion(productoId, cantidad, ejecutor);
+        // Al usar 'UsuarioActual', garantizamos que se use la SucursalId real del usuario logueado
+        var result = _service.ProcesarProduccion(productoId, cantidad, UsuarioActual);
 
         return result.Result ? Ok(result) : BadRequest(result);
-    }
-
-    /// <summary>
-    /// Helper para obtener la identidad del usuario desde los Claims del JWT.
-    /// </summary>
-    private UsuarioDTO? ObtenerEjecutor()
-    {
-        if (User.Identity?.IsAuthenticated != true)
-        {
-            // Opcional: Solo para pruebas en desarrollo si no hay JWT
-            return new UsuarioDTO { Id = 1, SucursalId = 1, PermisosJson = "{\"inventario\":true}" };
-        }
-
-        return new UsuarioDTO
-        {
-            Id = int.Parse(User.FindFirst("id")?.Value ?? "0"),
-            RolId = int.Parse(User.FindFirst("rolId")?.Value ?? "0"),
-            SucursalId = int.Parse(User.FindFirst("sucursalId")?.Value ?? "0"),
-            PermisosJson = User.FindFirst("permisos")?.Value ?? "{}"
-        };
     }
 }.
  
@@ -861,11 +693,11 @@ using IntegraPro.DTO.Models;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
-namespace IntegraPro.WebAPI.Controllers;
+namespace IntegraPro.API.Controllers; // Ajustado al namespace de tus otros controllers
 
 [ApiController]
 [Route("api/[controller]")]
-public class LicenciaController(LicenciaService service) : ControllerBase
+public class LicenciaController(LicenciaService service) : BaseController // Herencia aplicada
 {
     private readonly LicenciaService _service = service;
 
@@ -877,7 +709,11 @@ public class LicenciaController(LicenciaService service) : ControllerBase
     [HttpPost("activar")]
     public IActionResult Activar([FromQuery] string llave, [FromQuery] string empresa, [FromQuery] string ruc, [FromQuery] int maxEquipos)
     {
-        var response = _service.ActivarLicencia(llave, empresa, ruc, maxEquipos, ObtenerUsuarioSistema());
+        // Usamos el sistema de permisos de UsuarioDTO pero marcado como Sistema (ID 0)
+        // ya que en la activación inicial no hay un token JWT todavía.
+        var sistema = new UsuarioDTO { Id = 0, RolId = 1, SucursalId = 1, PermisosJson = "{\"config\":true}" };
+
+        var response = _service.ActivarLicencia(llave, empresa, ruc, maxEquipos, sistema);
         return Ok(response);
     }
 
@@ -887,32 +723,25 @@ public class LicenciaController(LicenciaService service) : ControllerBase
     {
         try
         {
+            var sistema = new UsuarioDTO { Id = 0, RolId = 1, SucursalId = 1, PermisosJson = "{\"config\":true}" };
+
             string hid = _service.GetHardwareId();
             int equiposGratis = 5;
             string llaveGenerada = _service.GenerarLlave(ruc, hid, equiposGratis);
-            var response = _service.ActivarLicencia(llaveGenerada, empresa, ruc, equiposGratis, ObtenerUsuarioSistema());
+
+            var response = _service.ActivarLicencia(llaveGenerada, empresa, ruc, equiposGratis, sistema);
             return Ok(response);
         }
         catch (Exception ex) { return BadRequest(new ApiResponse<bool>(false, ex.Message)); }
     }
 
     [HttpGet("validar-estado")]
+    [Authorize] // Para validar el estado actual, sí exigimos que el usuario esté logueado
     public IActionResult Validar()
     {
+        // Aquí podrías incluso pasar UsuarioActual si el servicio lo requiere para auditoría
         var response = _service.ValidarSistema();
         return response.Result ? Ok(response) : StatusCode(403, response);
-    }
-
-    private UsuarioDTO ObtenerUsuarioSistema()
-    {
-        return new UsuarioDTO
-        {
-            Id = 0,
-            RolId = 1,
-            SucursalId = 1,
-            // Solución CS0029: Usar Dictionary en lugar de List
-            Permisos = new Dictionary<string, bool> { { "config", true } }
-        };
     }
 }.
  
@@ -923,76 +752,51 @@ public class LicenciaController(LicenciaService service) : ControllerBase
 using IntegraPro.AppLogic.Utils;
 using IntegraPro.DTO.Models;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Authorization;
 
 namespace IntegraPro.API.Controllers;
 
 [ApiController]
 [Route("api/[controller]")]
-public class ProductoController(IProductoService service) : ControllerBase
+[Authorize] // Exigimos Token JWT para cualquier operación de productos
+public class ProductoController(IProductoService service) : BaseController // Herencia de tu BaseController real
 {
     private readonly IProductoService _service = service;
 
     [HttpGet]
     public IActionResult Get()
     {
-        var response = _service.ObtenerTodos(ObtenerEjecutor());
+        // Usamos UsuarioActual (la propiedad real del BaseController)
+        var response = _service.ObtenerTodos(UsuarioActual);
         return response.Result ? Ok(response) : BadRequest(response);
     }
 
     [HttpGet("{id}")]
     public IActionResult GetById(int id)
     {
-        var response = _service.ObtenerPorId(id, ObtenerEjecutor());
-        // Usamos NotFound si no existe o no tiene acceso, pero devolvemos el objeto response
+        var response = _service.ObtenerPorId(id, UsuarioActual);
         return response.Result ? Ok(response) : NotFound(response);
     }
 
     [HttpPost]
     public IActionResult Post([FromBody] ProductoDTO dto)
     {
-        var response = _service.Crear(dto, ObtenerEjecutor());
+        var response = _service.Crear(dto, UsuarioActual);
         return response.Result ? Ok(response) : BadRequest(response);
     }
 
     [HttpPut]
     public IActionResult Put([FromBody] ProductoDTO dto)
     {
-        var response = _service.Actualizar(dto, ObtenerEjecutor());
+        var response = _service.Actualizar(dto, UsuarioActual);
         return response.Result ? Ok(response) : BadRequest(response);
     }
 
     [HttpGet("alertas")]
     public IActionResult GetAlertas()
     {
-        var response = _service.ObtenerAlertasStock(ObtenerEjecutor());
+        var response = _service.ObtenerAlertasStock(UsuarioActual);
         return response.Result ? Ok(response) : BadRequest(response);
-    }
-
-    /// <summary>
-    /// Extrae la identidad y los permisos del usuario desde el Token JWT.
-    /// </summary>
-    private UsuarioDTO ObtenerEjecutor()
-    {
-        if (User.Identity?.IsAuthenticated == true)
-        {
-            return new UsuarioDTO
-            {
-                Id = int.Parse(User.FindFirst("id")?.Value ?? "0"),
-                RolId = int.Parse(User.FindFirst("rolId")?.Value ?? "0"),
-                SucursalId = int.Parse(User.FindFirst("sucursalId")?.Value ?? "0"),
-                // ¡VITAL!: Sin esto, los ValidarAcceso() fallarán
-                PermisosJson = User.FindFirst("permisos")?.Value ?? "{}"
-            };
-        }
-
-        // Modo desarrollo con permisos completos para no bloquear las pruebas
-        return new UsuarioDTO
-        {
-            Id = 1,
-            RolId = 1,
-            SucursalId = 1,
-            PermisosJson = "{\"productos\":true, \"config\":true, \"inventario\":true, \"ventas\":true}"
-        };
     }
 }.
  
@@ -1000,20 +804,21 @@ public class ProductoController(IProductoService service) : ControllerBase
 --- NOMBRE: ProformasController.cs --- 
  
 ﻿using IntegraPro.AppLogic.Interfaces;
+using IntegraPro.AppLogic.Utils;
 using IntegraPro.DTO.Models;
 using Microsoft.AspNetCore.Mvc;
 using QuestPDF.Fluent;
 using QuestPDF.Infrastructure;
-using System;
-using System.Collections.Generic;
+using Microsoft.AspNetCore.Authorization;
 
 namespace IntegraPro.API.Controllers;
 
 [ApiController]
 [Route("api/[controller]")]
+[Authorize] // Asegura que nadie entre sin Token
 public class ProformasController(
     IProformaService service,
-    IConfiguracionService configService) : ControllerBase
+    IConfiguracionService configService) : BaseController // HERENCIA: Ahora hereda de tu BaseController
 {
     private readonly IProformaService _service = service;
     private readonly IConfiguracionService _configService = configService;
@@ -1021,21 +826,22 @@ public class ProformasController(
     [HttpPost]
     public IActionResult Post(ProformaEncabezadoDTO dto)
     {
-        var res = _service.GuardarProforma(dto, ObtenerEjecutor());
-        return res.Result ? Ok(res) : BadRequest(res);
+        // CAMBIO: Usamos UsuarioActual (heredado)
+        var res = _service.GuardarProforma(dto, UsuarioActual);
+        return res.Result ? Ok(res) : TratarResultadoFallido(res);
     }
 
     [HttpGet]
     public IActionResult Get(string filtro = "")
     {
-        var res = _service.Consultar(filtro, ObtenerEjecutor());
+        var res = _service.Consultar(filtro, UsuarioActual);
         return Ok(res);
     }
 
     [HttpGet("{id}")]
     public IActionResult GetById(int id)
     {
-        var res = _service.ObtenerPorId(id, ObtenerEjecutor());
+        var res = _service.ObtenerPorId(id, UsuarioActual);
         return res.Result ? Ok(res) : NotFound(res);
     }
 
@@ -1044,89 +850,97 @@ public class ProformasController(
     {
         try
         {
-            var ejecutor = ObtenerEjecutor();
-            var resProforma = _service.ObtenerPorId(id, ejecutor);
-            var resEmpresa = _configService.ObtenerDatosEmpresa();
+            // CAMBIO: Usamos UsuarioActual
+            var resProforma = _service.ObtenerPorId(id, UsuarioActual);
+            var resEmpresa = _configService.ObtenerDatosEmpresa(UsuarioActual);
 
             if (!resProforma.Result || resProforma.Data == null) return NotFound(resProforma);
             if (!resEmpresa.Result || resEmpresa.Data == null) return BadRequest(resEmpresa);
 
             QuestPDF.Settings.License = LicenseType.Community;
+
             var documento = new Reports.ProformaReport(resProforma.Data, resEmpresa.Data);
             byte[] pdfBytes = documento.GeneratePdf();
 
-            return File(pdfBytes, "application/pdf", $"Proforma_{id}.pdf");
+            return File(pdfBytes, "application/pdf", $"Proforma_{id}_{DateTime.Now:yyyyMMdd}.pdf");
         }
         catch (Exception ex)
         {
-            return BadRequest(new { success = false, message = "Error en reporte: " + ex.Message });
+            return BadRequest(new ApiResponse<string>(false, "Error al generar reporte: " + ex.Message));
         }
     }
 
     [HttpGet("cliente/{clienteId}")]
     public IActionResult GetByCliente(int clienteId)
     {
-        var res = _service.ObtenerPorCliente(clienteId, ObtenerEjecutor());
+        var res = _service.ObtenerPorCliente(clienteId, UsuarioActual);
         return Ok(res);
     }
 
     [HttpPatch("{id}/anular")]
     public IActionResult Anular(int id)
     {
-        var res = _service.Anular(id, ObtenerEjecutor());
-        return res.Result ? Ok(res) : BadRequest(res);
+        var res = _service.Anular(id, UsuarioActual);
+        return res.Result ? Ok(res) : TratarResultadoFallido(res);
     }
 
     [HttpPost("{id}/convertir-a-factura")]
     public IActionResult Facturar(int id, [FromQuery] string medio = "Efectivo")
     {
-        var res = _service.Facturar(id, medio, ObtenerEjecutor());
-        return res.Result ? Ok(res) : BadRequest(res);
+        var res = _service.Facturar(id, medio, UsuarioActual);
+        return res.Result ? Ok(res) : TratarResultadoFallido(res);
     }
 
-    private UsuarioDTO ObtenerEjecutor()
+    private IActionResult TratarResultadoFallido<T>(ApiResponse<T> res)
     {
-        // En producción, extraer de Claims JWT
-        return new UsuarioDTO
-        {
-            Id = 3,
-            RolId = 1,
-            SucursalId = 1,
-            Permisos = new Dictionary<string, bool> { { "proformas", true }, { "ventas", false }, { "config", true } }
-        };
+        if (res.Message.Contains("denegado") || res.Message.Contains("No tiene permiso"))
+            return StatusCode(403, res);
+
+        return BadRequest(res);
     }
+
+    // NOTA: Se borró ObtenerEjecutor() porque BaseController ya lo hace mejor.
 }.
  
 --- RUTA: C:\Users\Luis\source\repos\Integra\IntegraPro\IntegraPro.API\Controllers\ProveedorController.cs --- 
 --- NOMBRE: ProveedorController.cs --- 
  
-﻿using Microsoft.AspNetCore.Mvc;
-using IntegraPro.AppLogic.Interfaces;
+﻿using IntegraPro.AppLogic.Interfaces;
+using IntegraPro.AppLogic.Utils;
 using IntegraPro.DTO.Models;
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Mvc;
 
 namespace IntegraPro.API.Controllers;
 
 [ApiController]
 [Route("api/[controller]")]
-public class ProveedorController(IProveedorService service) : ControllerBase
+[Authorize] // Protegemos el acceso global al controlador
+public class ProveedorController(IProveedorService service) : BaseController // Herencia de BaseController
 {
     private readonly IProveedorService _service = service;
 
-    // Obtener todos los proveedores (Ahora filtrados por permiso)
+    // Obtener todos los proveedores
     [HttpGet]
     public IActionResult Get()
     {
-        var response = _service.ObtenerTodos(ObtenerEjecutor());
+        // UsuarioActual viene del BaseController con todos sus Claims
+        var response = _service.ObtenerTodos(UsuarioActual);
         return response.Result ? Ok(response) : BadRequest(response);
     }
 
-    // Crear un nuevo proveedor (Valida permisos de escritura)
+    // Crear un nuevo proveedor
     [HttpPost]
     public IActionResult Post([FromBody] ProveedorDTO proveedor)
     {
-        var response = _service.Crear(proveedor, ObtenerEjecutor());
-        // Usamos el mensaje dinámico del Service para el Ok
-        return response.Result ? Ok(response) : StatusCode(403, response);
+        var response = _service.Crear(proveedor, UsuarioActual);
+
+        // Si el servicio lanza un UnauthorizedAccessException, el BaseController o 
+        // la lógica del Service lo atrapará. Aquí retornamos 403 si falla el permiso.
+        if (!response.Result && response.Message.Contains("permiso"))
+            return StatusCode(403, response);
+
+        return response.Result ? Ok(response) : BadRequest(response);
     }
 
     // Actualizar un proveedor existente
@@ -1134,9 +948,9 @@ public class ProveedorController(IProveedorService service) : ControllerBase
     public IActionResult Put([FromBody] ProveedorDTO proveedor)
     {
         if (proveedor.Id <= 0)
-            return BadRequest(new { mensaje = "ID de proveedor no válido para actualizar." });
+            return BadRequest(new ApiResponse<bool>(false, "ID de proveedor no válido para actualizar."));
 
-        var response = _service.Actualizar(proveedor, ObtenerEjecutor());
+        var response = _service.Actualizar(proveedor, UsuarioActual);
         return response.Result ? Ok(response) : BadRequest(response);
     }
 
@@ -1145,28 +959,10 @@ public class ProveedorController(IProveedorService service) : ControllerBase
     public IActionResult Delete(int id)
     {
         if (id <= 0)
-            return BadRequest(new { mensaje = "ID de proveedor no válido." });
+            return BadRequest(new ApiResponse<bool>(false, "ID de proveedor no válido."));
 
-        var response = _service.Eliminar(id, ObtenerEjecutor());
+        var response = _service.Eliminar(id, UsuarioActual);
         return response.Result ? Ok(response) : BadRequest(response);
-    }
-
-    /// <summary>
-    /// Extrae la identidad del usuario para validar permisos en el Factory.
-    /// </summary>
-    private UsuarioDTO ObtenerEjecutor()
-    {
-        if (User.Identity?.IsAuthenticated == true)
-        {
-            return new UsuarioDTO
-            {
-                Id = int.Parse(User.FindFirst("id")?.Value ?? "0"),
-                RolId = int.Parse(User.FindFirst("rolId")?.Value ?? "0"),
-                SucursalId = int.Parse(User.FindFirst("sucursalId")?.Value ?? "0")
-            };
-        }
-        // Mock de desarrollo: Rol 1 suele ser Admin con todos los permisos
-        return new UsuarioDTO { Id = 1, RolId = 1, SucursalId = 1 };
     }
 }.
  
@@ -1176,62 +972,56 @@ public class ProveedorController(IProveedorService service) : ControllerBase
 ﻿using IntegraPro.AppLogic.Interfaces;
 using IntegraPro.DTO.Models;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Authorization; // Necesario para [Authorize]
 using System.Security.Claims;
 
 namespace IntegraPro.API.Controllers;
 
 [Route("api/[controller]")]
 [ApiController]
+[Authorize] // <--- MEDIDA DE SEGURIDAD 1: Todo el controlador requiere JWT por defecto
 public class UsuarioController(IUsuarioService service) : ControllerBase
 {
     private readonly IUsuarioService _service = service;
 
     [HttpPost("login")]
+    [AllowAnonymous] // <--- MEDIDA DE SEGURIDAD 2: El login es la única puerta abierta
     public IActionResult Login([FromBody] LoginRequest request)
     {
         var result = _service.Login(request.Username, request.Password);
-
         if (!result.Result) return Unauthorized(result);
-
         return Ok(result);
     }
 
     [HttpPost("registrar")]
     public IActionResult Registrar([FromBody] UsuarioDTO usuario)
     {
-        // CORRECCIÓN: Se pasa el ejecutor
         var result = _service.Registrar(usuario, ObtenerEjecutor());
-
         if (!result.Result) return BadRequest(result);
-
         return Ok(result);
     }
 
     [HttpPost("logout/{id}")]
     public IActionResult Logout(int id)
     {
+        // Validamos que el usuario solo pueda cerrarse la sesión a sí mismo 
+        // a menos que sea un administrador.
         var result = _service.Logout(id);
         return Ok(result);
     }
 
     [HttpPost("forzar-cierre")]
+    [AllowAnonymous] // Se permite anónimo para que el usuario libere su propia sesión si se trabó
     public IActionResult ForzarCierre([FromBody] LoginRequest request)
     {
         var result = _service.ForzarCierreSesion(request.Username, request.Password);
-
         if (!result.Result) return BadRequest(result);
-
         return Ok(result);
     }
-
-    // ==========================================
-    // ENDPOINTS DE ADMINISTRACIÓN
-    // ==========================================
 
     [HttpGet("listar-todos")]
     public IActionResult GetAll()
     {
-        // CORRECCIÓN: Se pasa el ejecutor
         var result = _service.ObtenerTodos(ObtenerEjecutor());
         return Ok(result);
     }
@@ -1239,7 +1029,6 @@ public class UsuarioController(IUsuarioService service) : ControllerBase
     [HttpGet("roles-disponibles")]
     public IActionResult GetRoles()
     {
-        // CORRECCIÓN: Se pasa el ejecutor
         var result = _service.ListarRolesDisponibles(ObtenerEjecutor());
         return Ok(result);
     }
@@ -1247,53 +1036,39 @@ public class UsuarioController(IUsuarioService service) : ControllerBase
     [HttpPut("actualizar-rol")]
     public IActionResult UpdateRol([FromQuery] int usuarioId, [FromQuery] int nuevoRolId)
     {
-        // CORRECCIÓN: Se pasa el ejecutor
         var result = _service.ActualizarRol(usuarioId, nuevoRolId, ObtenerEjecutor());
-
         if (!result.Result) return BadRequest(result);
-
         return Ok(result);
     }
 
-    /// <summary>
-    /// Método privado para obtener los datos del usuario que está operando.
-    /// Esto resuelve los errores de "No se ha dado ningún argumento que corresponda al parámetro ejecutor".
-    /// </summary>
     private UsuarioDTO ObtenerEjecutor()
     {
-        // 1. Si el usuario está autenticado (JWT enviado)
+        // MEDIDA DE SEGURIDAD 3: Sincronización exacta con los claims del JWT generado en el Service
         if (User.Identity?.IsAuthenticated == true)
         {
             return new UsuarioDTO
             {
-                Id = int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "0"),
-                RolId = int.Parse(User.FindFirst("RolId")?.Value ?? "0"),
-                SucursalId = int.Parse(User.FindFirst("SucursalId")?.Value ?? "0"),
+                // Usamos los strings exactos que definimos en UsuarioService.GenerarJwtToken
+                Id = int.Parse(User.FindFirst("id")?.Value ?? "0"),
+                RolId = int.Parse(User.FindFirst("rolId")?.Value ?? "0"),
+                SucursalId = int.Parse(User.FindFirst("sucursalId")?.Value ?? "0"),
                 Username = User.Identity.Name ?? string.Empty,
-                // IMPORTANTE: Al asignar esto, el DTO llena el diccionario automáticamente
-                PermisosJson = User.FindFirst("Permisos")?.Value
+                PermisosJson = User.FindFirst("permisos")?.Value
             };
         }
 
-        // 2. Fallback (Solo para pruebas iniciales si no hay token)
-        // ADVERTENCIA: Una vez que el sistema esté en producción, esto debería lanzar una excepción
-        return new UsuarioDTO
-        {
-            Id = 1,
-            RolId = 1,
-            SucursalId = 1,
-            Username = "admin_test",
-            PermisosJson = "{\"all\": true}" // Usamos el JSON para disparar la lógica del DTO
-        };
+        // Ya no devolvemos un Admin de prueba. Si llegamos aquí, es un error de seguridad.
+        throw new UnauthorizedAccessException("Operación no permitida sin una sesión válida.");
     }
 }.
  
 --- RUTA: C:\Users\Luis\source\repos\Integra\IntegraPro\IntegraPro.API\Controllers\VentaController.cs --- 
 --- NOMBRE: VentaController.cs --- 
  
-﻿using IntegraPro.AppLogic.Services;
+﻿using IntegraPro.AppLogic.Interfaces; // Usar la interfaz para Inyección de Dependencias
 using IntegraPro.DTO.Models;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Authorization;
 using QuestPDF.Fluent;
 using QuestPDF.Infrastructure;
 using IntegraPro.API.Reports;
@@ -1304,34 +1079,30 @@ namespace IntegraPro.API.Controllers;
 
 [Route("api/[controller]")]
 [ApiController]
-public class VentaController(VentaService service) : ControllerBase
+[Authorize] // Asegura que nadie sin Token JWT pueda facturar o ver reportes
+public class VentaController(IVentaService service) : ControllerBase
 {
-    private readonly VentaService _service = service;
+    private readonly IVentaService _service = service;
 
     [HttpPost]
     public IActionResult Post([FromBody] FacturaDTO factura)
     {
-        try
-        {
-            // Simulación de validación con Hacienda
-            factura.EstadoHacienda = "ACEPTADO";
-            factura.EsOffline = false;
+        // Forzamos datos de Hacienda (Simulación)
+        factura.EstadoHacienda = "ACEPTADO";
+        factura.EsOffline = false;
 
-            // Se pasa el ejecutor al método ProcesarVenta
-            string numFac = _service.ProcesarVenta(factura, ObtenerEjecutor());
+        var response = _service.ProcesarVenta(factura, ObtenerEjecutor());
 
-            return Ok(new
-            {
-                success = true,
-                factura = numFac,
-                estado = factura.EstadoHacienda,
-                message = "Venta procesada y aceptada por Hacienda."
-            });
-        }
-        catch (Exception ex)
+        if (!response.Result)
+            return BadRequest(response);
+
+        return Ok(new
         {
-            return BadRequest(new { success = false, message = ex.Message });
-        }
+            success = true,
+            factura = response.Data, // El consecutivo generado
+            estado = factura.EstadoHacienda,
+            message = response.Message
+        });
     }
 
     [HttpGet("reportes")]
@@ -1342,99 +1113,97 @@ public class VentaController(VentaService service) : ControllerBase
         [FromQuery] string buscar = "",
         [FromQuery] string? condicion = "")
     {
-        try
+        DateTime fechaInicio = desde ?? DateTime.Now.AddMonths(-1);
+        DateTime fechaFin = hasta ?? DateTime.Now;
+
+        var response = _service.ObtenerReporteVentas(
+            fechaInicio,
+            fechaFin,
+            clienteId,
+            buscar ?? "",
+            condicion ?? "",
+            ObtenerEjecutor()
+        );
+
+        if (!response.Result)
+            return BadRequest(response);
+
+        DataTable dt = response.Data;
+        decimal sumaTotales = 0;
+        var filas = new List<Dictionary<string, object>>();
+
+        foreach (DataRow row in dt.Rows)
         {
-            // Aseguramos que las fechas no sean nulas para el Service
-            DateTime fechaInicio = desde ?? DateTime.Now.AddMonths(-1);
-            DateTime fechaFin = hasta ?? DateTime.Now;
-
-            // LLAMADA CORREGIDA: Ahora coincide con los 6 parámetros del Service
-            DataTable dt = _service.ObtenerReporteVentas(
-                fechaInicio,
-                fechaFin,
-                clienteId,
-                buscar ?? "",
-                condicion ?? "",
-                ObtenerEjecutor()
-            );
-
-            decimal sumaTotales = 0;
-            var filas = new List<Dictionary<string, object>>();
-
-            foreach (DataRow row in dt.Rows)
+            var diccionario = new Dictionary<string, object>();
+            foreach (DataColumn col in dt.Columns)
             {
-                var diccionario = new Dictionary<string, object>();
-                foreach (DataColumn col in dt.Columns)
-                {
-                    diccionario[col.ColumnName] = row[col] == DBNull.Value ? null : row[col];
-                }
-
-                filas.Add(diccionario);
-
-                // Validamos que la columna exista antes de sumar
-                if (dt.Columns.Contains("total_comprobante") && row["total_comprobante"] != DBNull.Value)
-                    sumaTotales += Convert.ToDecimal(row["total_comprobante"]);
+                diccionario[col.ColumnName] = row[col] == DBNull.Value ? null : row[col];
             }
+            filas.Add(diccionario);
 
-            return Ok(new
-            {
-                success = true,
-                conteo = filas.Count,
-                totalSuma = sumaTotales,
-                data = filas
-            });
+            if (dt.Columns.Contains("total_comprobante") && row["total_comprobante"] != DBNull.Value)
+                sumaTotales += Convert.ToDecimal(row["total_comprobante"]);
         }
-        catch (Exception ex)
+
+        return Ok(new
         {
-            return BadRequest(new { success = false, message = ex.Message });
-        }
+            success = true,
+            conteo = filas.Count,
+            totalSuma = sumaTotales,
+            data = filas
+        });
     }
 
     [HttpGet("imprimir/{id}")]
     public IActionResult Imprimir(int id)
     {
+        var ejecutor = ObtenerEjecutor();
+
+        // 1. Obtener la factura
+        var responseFactura = _service.ObtenerFacturaParaImpresion(id, ejecutor);
+        if (!responseFactura.Result || responseFactura.Data == null)
+            return NotFound(responseFactura);
+
+        // 2. Obtener datos de la empresa (Ahora requiere ejecutor)
+        var responseEmpresa = _service.ObtenerEmpresa(ejecutor);
+        if (!responseEmpresa.Result || responseEmpresa.Data == null)
+            return BadRequest(responseEmpresa);
+
         try
         {
-            // Se pasa el ejecutor para validar si tiene permiso de ver esta factura
-            var factura = _service.ObtenerFacturaParaImpresion(id, ObtenerEjecutor());
-
-            if (factura == null)
-                return NotFound(new { success = false, message = "La factura no existe o no tiene permisos para verla." });
-
-            var empresa = _service.ObtenerEmpresa();
-
             QuestPDF.Settings.License = LicenseType.Community;
 
-            var documento = new FacturaReport(factura, empresa);
+            var documento = new FacturaReport(responseFactura.Data, responseEmpresa.Data);
             byte[] pdfBytes = documento.GeneratePdf();
 
-            return File(pdfBytes, "application/pdf", $"Factura_{factura.Consecutivo}.pdf");
+            return File(pdfBytes, "application/pdf", $"Factura_{responseFactura.Data.Consecutivo}.pdf");
         }
         catch (Exception ex)
         {
-            return BadRequest(new { success = false, message = "Error al generar PDF: " + ex.Message });
+            return BadRequest(new { success = false, message = "Error al renderizar PDF: " + ex.Message });
         }
     }
 
     /// <summary>
-    /// Obtiene el usuario autenticado desde el Token JWT.
+    /// Extrae de forma segura la identidad del usuario desde el Token JWS.
     /// </summary>
     private UsuarioDTO ObtenerEjecutor()
     {
-        // Se recomienda usar nombres de claims estándar o los definidos en tu Login
         if (User.Identity?.IsAuthenticated == true)
         {
             return new UsuarioDTO
             {
-                Id = int.Parse(User.FindFirst("id")?.Value ?? User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "0"),
-                RolId = int.Parse(User.FindFirst("rolId")?.Value ?? "0"),
-                SucursalId = int.Parse(User.FindFirst("sucursalId")?.Value ?? "0"),
-                Username = User.Identity.Name ?? ""
+                Id = int.Parse(User.FindFirst("Id")?.Value ?? "0"),
+                RolId = int.Parse(User.FindFirst("RolId")?.Value ?? "0"),
+                SucursalId = int.Parse(User.FindFirst("SucursalId")?.Value ?? "0"),
+                Username = User.Identity.Name ?? "System",
+                // Cargamos permisos desde el token si existen
+                PermisosJson = User.FindFirst("permisos")?.Value
             };
         }
 
-        // Usuario por defecto solo para desarrollo
-        return new UsuarioDTO { Id = 1, RolId = 1, SucursalId = 1, Username = "DevUser" };
+        // En producción, esto debería lanzar un error de No Autorizado
+        throw new UnauthorizedAccessException("Debe estar autenticado para realizar esta operación.");
     }
 }.
  
@@ -1570,7 +1339,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("IntegraPro.API")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+8967fa238cb0db6447bbb1bc5017962648ff59f6")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+4153b5f28a857579dabbc5516649e889b6ddb8bd")]
 [assembly: System.Reflection.AssemblyProductAttribute("IntegraPro.API")]
 [assembly: System.Reflection.AssemblyTitleAttribute("IntegraPro.API")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
@@ -2034,7 +1803,8 @@ public interface IClienteService
     ApiResponse<bool> Actualizar(ClienteDTO cliente, UsuarioDTO ejecutor);
 
     // Búsqueda rápida (comúnmente usada en ventas)
-    ApiResponse<ClienteDTO> BuscarPorIdentificacion(string identificacion);
+    // CAMBIO: Ahora requiere el ejecutor para validar que quien busca tiene permisos
+    ApiResponse<ClienteDTO> BuscarPorIdentificacion(string identificacion, UsuarioDTO ejecutor);
 }.
  
 --- RUTA: C:\Users\Luis\source\repos\Integra\IntegraPro\IntegraPro.AppLogic\Interfaces\ICompraService.cs --- 
@@ -2191,6 +1961,25 @@ public interface IUsuarioService
     ApiResponse<List<RolDTO>> ListarRolesDisponibles(UsuarioDTO ejecutor);
 }.
  
+--- RUTA: C:\Users\Luis\source\repos\Integra\IntegraPro\IntegraPro.AppLogic\Interfaces\IVentaService.cs --- 
+--- NOMBRE: IVentaService.cs --- 
+ 
+﻿using IntegraPro.AppLogic.Utils;
+using IntegraPro.DTO.Models;
+using System.Data;
+
+namespace IntegraPro.AppLogic.Interfaces;
+
+public interface IVentaService
+{
+    ApiResponse<string> ProcesarVenta(FacturaDTO factura, UsuarioDTO ejecutor);
+    ApiResponse<DataTable> ObtenerReporteVentas(DateTime? desde, DateTime? hasta, int? clienteId, string busqueda, string? condicionVenta, UsuarioDTO ejecutor);
+    ApiResponse<FacturaDTO> ObtenerFacturaParaImpresion(int id, UsuarioDTO ejecutor);
+
+    // CORRECCIÓN: Ahora coincide con la implementación y la Factory
+    ApiResponse<EmpresaDTO> ObtenerEmpresa(UsuarioDTO ejecutor);
+}.
+ 
 --- RUTA: C:\Users\Luis\source\repos\Integra\IntegraPro\IntegraPro.AppLogic\obj\Debug\net9.0\.NETCoreApp,Version=v9.0.AssemblyAttributes.cs --- 
 --- NOMBRE: .NETCoreApp,Version=v9.0.AssemblyAttributes.cs --- 
  
@@ -2219,7 +2008,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("IntegraPro.AppLogic")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+8967fa238cb0db6447bbb1bc5017962648ff59f6")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+4153b5f28a857579dabbc5516649e889b6ddb8bd")]
 [assembly: System.Reflection.AssemblyProductAttribute("IntegraPro.AppLogic")]
 [assembly: System.Reflection.AssemblyTitleAttribute("IntegraPro.AppLogic")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
@@ -2523,7 +2312,6 @@ public class ClienteService(ClienteFactory cliFactory) : IClienteService
             // --- SEGURIDAD: Validación preventiva ---
             ejecutor.ValidarAcceso("clientes");
 
-            // Sincronizado con el Factory: Ahora pasamos el ejecutor
             var clientes = _cliFactory.ObtenerTodos(ejecutor);
             return new ApiResponse<List<ClienteDTO>>(true, "Clientes recuperados con éxito", clientes);
         }
@@ -2537,19 +2325,28 @@ public class ClienteService(ClienteFactory cliFactory) : IClienteService
         }
     }
 
-    public ApiResponse<ClienteDTO> BuscarPorIdentificacion(string identificacion)
+    // ACTUALIZADO: Ahora recibe 'ejecutor' para cumplir con la interfaz y la seguridad
+    public ApiResponse<ClienteDTO> BuscarPorIdentificacion(string identificacion, UsuarioDTO ejecutor)
     {
         try
         {
+            // --- SEGURIDAD: Solo usuarios autorizados pueden buscar por ID ---
+            ejecutor.ValidarAcceso("clientes");
+
             if (string.IsNullOrWhiteSpace(identificacion))
                 return new ApiResponse<ClienteDTO>(false, "La identificación no puede estar vacía.");
 
-            var cliente = _cliFactory.ObtenerPorIdentificacion(identificacion);
+            // Sincronizado con Factory: Se pasa ejecutor por si la Factory aplica filtros de sucursal
+            var cliente = _cliFactory.ObtenerPorIdentificacion(identificacion, ejecutor);
 
             if (cliente == null)
                 return new ApiResponse<ClienteDTO>(false, "Cliente no encontrado.");
 
             return new ApiResponse<ClienteDTO>(true, "Cliente localizado", cliente);
+        }
+        catch (UnauthorizedAccessException ex)
+        {
+            return new ApiResponse<ClienteDTO>(false, ex.Message);
         }
         catch (Exception ex)
         {
@@ -2561,7 +2358,6 @@ public class ClienteService(ClienteFactory cliFactory) : IClienteService
     {
         try
         {
-            // --- SEGURIDAD: Validación preventiva ---
             ejecutor.ValidarAcceso("clientes");
             ejecutor.ValidarEscritura();
 
@@ -2580,7 +2376,6 @@ public class ClienteService(ClienteFactory cliFactory) : IClienteService
     {
         try
         {
-            // --- SEGURIDAD: Validación preventiva ---
             ejecutor.ValidarAcceso("clientes");
             ejecutor.ValidarEscritura();
 
@@ -2795,17 +2590,19 @@ public class InventarioService(InventarioFactory factory, ProductoFactory produc
     {
         try
         {
-            // SEGURIDAD: Usamos los helpers estandarizados
             ejecutor.ValidarAcceso("inventario");
             ejecutor.ValidarEscritura();
 
             if (mov.Cantidad <= 0)
                 return new ApiResponse<bool>(false, "La cantidad debe ser mayor a cero", false);
 
-            // La lógica de sucursal_limit ya está blindada en el Factory, 
-            // pero mantenerla aquí como pre-validación es buena práctica.
-            if (ejecutor.TienePermiso("sucursal_limit"))
+            // === CORRECCIÓN DE LÓGICA ===
+            // 1. Si NO tiene 'all' Y tiene 'sucursal_limit', lo obligamos a su sede.
+            // 2. Si tiene 'all', ignoramos el 'sucursal_limit' y dejamos que pase el mov.SucursalId del JSON.
+            if (!ejecutor.TienePermiso("all") && ejecutor.TienePermiso("sucursal_limit"))
+            {
                 mov.SucursalId = ejecutor.SucursalId;
+            }
 
             bool ok = _factory.Insertar(mov, ejecutor);
             return new ApiResponse<bool>(ok, ok ? "Movimiento registrado y stock actualizado" : "Error al registrar", ok);
@@ -3101,6 +2898,9 @@ public class ProductoService(ProductoFactory factory) : IProductoService
 using IntegraPro.AppLogic.Utils;
 using IntegraPro.DataAccess.Factory;
 using IntegraPro.DTO.Models;
+using System;
+using System.Collections.Generic;
+using System.Linq;
 
 namespace IntegraPro.AppLogic.Services;
 
@@ -3117,7 +2917,6 @@ public class ProformaService(
     {
         try
         {
-            // Validamos acceso general y que no sea solo lectura
             ejecutor.ValidarAcceso("proformas");
             ejecutor.ValidarEscritura();
 
@@ -3158,7 +2957,6 @@ public class ProformaService(
         try
         {
             ejecutor.ValidarAcceso("proformas");
-            // Filtramos la lista general por cliente
             var lista = _factory.ListarProformas(string.Empty, ejecutor)
                                 .Where(x => x.ClienteId == clienteId).ToList();
 
@@ -3184,33 +2982,53 @@ public class ProformaService(
     {
         try
         {
-            // 1. Seguridad de doble nivel (Acceso a ventas + No ser solo lectura)
+            // 1. Validaciones de Seguridad Base
             ejecutor.ValidarAcceso("ventas");
             ejecutor.ValidarEscritura();
 
-            // 2. Validación preventiva de stock (Fail-Fast)
+            // 2. Cargar Proforma Completa (Incluyendo detalles)
+            var proforma = _factory.ObtenerPorId(id, ejecutor);
+            if (proforma == null)
+                return new ApiResponse<string>(false, "La proforma no existe o no tiene permisos para verla.");
+
+            // 3. Validación de Stock Preventiva
             var empresa = _configFactory.ObtenerEmpresa(ejecutor);
             bool permitirNegativo = empresa?.PermitirStockNegativo ?? false;
 
             if (!permitirNegativo)
             {
-                var proforma = _factory.ObtenerPorId(id, ejecutor);
-                if (proforma == null) return new ApiResponse<string>(false, "La proforma no existe.");
+                // Forzamos al ProductoFactory a mirar la sucursal de la Proforma usando un usuario ficticio
+                var validadorSucursal = new UsuarioDTO
+                {
+                    Id = ejecutor.Id,
+                    SucursalId = proforma.SucursalId, // Usamos la sucursal origen de la proforma
+                    // Corrección Error CS0019: Se usa un nuevo diccionario vacío del mismo tipo
+                    Permisos = ejecutor.Permisos ?? new Dictionary<string, bool>()
+                };
+
+                if (proforma.Detalles == null || !proforma.Detalles.Any())
+                    return new ApiResponse<string>(false, "La proforma no tiene líneas de detalle para facturar.");
 
                 foreach (var det in proforma.Detalles)
                 {
-                    // Validamos stock específicamente en la sucursal del ejecutor
-                    var producto = _prodFactory.ObtenerPorId(det.ProductoId, ejecutor);
-                    if (producto != null && producto.Existencia < det.Cantidad)
+                    // Obtener producto filtrado por la sucursal de la proforma
+                    var producto = _prodFactory.GetById(det.ProductoId, validadorSucursal);
+
+                    if (producto == null)
+                        return new ApiResponse<string>(false, $"El producto ID {det.ProductoId} no está registrado en la Sucursal {proforma.SucursalId}.");
+
+                    if (producto.Existencia < det.Cantidad)
                     {
                         return new ApiResponse<string>(false,
-                            $"Stock insuficiente para '{producto.Nombre}'. Disponible: {producto.Existencia:N2}");
+                            $"Stock insuficiente en Sucursal {proforma.SucursalId} para '{producto.Nombre}'. " +
+                            $"Disponible: {producto.Existencia:N2}, Requerido: {det.Cantidad:N2}");
                     }
                 }
             }
 
-            // 3. Conversión atómica en Base de Datos
+            // 4. Ejecución del Proceso en DB (Hereda la sucursal de la proforma internamente)
             string consecutivo = _factory.ConvertirAFactura(id, medio, ejecutor);
+
             return new ApiResponse<string>(true, $"Factura {consecutivo} generada con éxito.", consecutivo);
         }
         catch (UnauthorizedAccessException ex) { return new ApiResponse<string>(false, ex.Message); }
@@ -3230,21 +3048,37 @@ namespace IntegraPro.AppLogic.Services;
 
 public class ProveedorService(ProveedorFactory factory) : IProveedorService
 {
+    private readonly ProveedorFactory _factory = factory;
+
     public ApiResponse<List<ProveedorDTO>> ObtenerTodos(UsuarioDTO ejecutor)
     {
         try
         {
-            var lista = factory.ObtenerTodos(ejecutor);
-            return new ApiResponse<List<ProveedorDTO>>(true, "Proveedores cargados", lista);
+            // SEGURIDAD: Validación preventiva en la capa de servicio
+            ejecutor.ValidarAcceso("proveedores");
+
+            var lista = _factory.ObtenerTodos(ejecutor);
+            return new ApiResponse<List<ProveedorDTO>>(true, "Proveedores cargados con éxito", lista);
         }
-        catch (Exception ex) { return new ApiResponse<List<ProveedorDTO>>(false, ex.Message); }
+        catch (UnauthorizedAccessException ex)
+        {
+            return new ApiResponse<List<ProveedorDTO>>(false, ex.Message);
+        }
+        catch (Exception ex)
+        {
+            return new ApiResponse<List<ProveedorDTO>>(false, "Error al listar proveedores: " + ex.Message);
+        }
     }
 
     public ApiResponse<bool> Crear(ProveedorDTO proveedor, UsuarioDTO ejecutor)
     {
         try
         {
-            factory.Crear(proveedor, ejecutor);
+            // SEGURIDAD: Doble validación (Acceso al módulo y permiso de escritura)
+            ejecutor.ValidarAcceso("proveedores");
+            ejecutor.ValidarEscritura();
+
+            _factory.Crear(proveedor, ejecutor);
             return new ApiResponse<bool>(true, "Proveedor creado con éxito", true);
         }
         catch (UnauthorizedAccessException ex) { return new ApiResponse<bool>(false, ex.Message, false); }
@@ -3255,20 +3089,28 @@ public class ProveedorService(ProveedorFactory factory) : IProveedorService
     {
         try
         {
-            factory.Actualizar(proveedor, ejecutor);
-            return new ApiResponse<bool>(true, "Proveedor actualizado", true);
+            ejecutor.ValidarAcceso("proveedores");
+            ejecutor.ValidarEscritura();
+
+            _factory.Actualizar(proveedor, ejecutor);
+            return new ApiResponse<bool>(true, "Proveedor actualizado con éxito", true);
         }
-        catch (Exception ex) { return new ApiResponse<bool>(false, ex.Message, false); }
+        catch (UnauthorizedAccessException ex) { return new ApiResponse<bool>(false, ex.Message, false); }
+        catch (Exception ex) { return new ApiResponse<bool>(false, "Error al actualizar: " + ex.Message, false); }
     }
 
     public ApiResponse<bool> Eliminar(int id, UsuarioDTO ejecutor)
     {
         try
         {
-            factory.Eliminar(id, ejecutor);
-            return new ApiResponse<bool>(true, "Proveedor desactivado", true);
+            ejecutor.ValidarAcceso("proveedores");
+            ejecutor.ValidarEscritura();
+
+            _factory.Eliminar(id, ejecutor);
+            return new ApiResponse<bool>(true, "Proveedor desactivado correctamente", true);
         }
-        catch (Exception ex) { return new ApiResponse<bool>(false, ex.Message, false); }
+        catch (UnauthorizedAccessException ex) { return new ApiResponse<bool>(false, ex.Message, false); }
+        catch (Exception ex) { return new ApiResponse<bool>(false, "Error al eliminar: " + ex.Message, false); }
     }
 }.
  
@@ -3319,6 +3161,7 @@ public class UsuarioService : IUsuarioService
                 return new ApiResponse<UsuarioDTO>(false, "Credenciales incorrectas");
             }
 
+            // Validación de Hardware ID (Evitar múltiples terminales con la misma cuenta)
             string hidActual = _licenciaService.GetHardwareId();
             if (!string.IsNullOrEmpty(usuario.HardwareIdSesion) && usuario.HardwareIdSesion != hidActual)
             {
@@ -3329,12 +3172,11 @@ public class UsuarioService : IUsuarioService
             _factory.ActualizarSesionHardware(usuario.Id, hidActual);
             _factory.RegistrarLogin(usuario.Id);
 
-            // === GENERACIÓN DE TOKEN SINCRONIZADA ===
+            // Generar el Token con la identidad real
             usuario.Token = GenerarJwtToken(usuario);
-
             usuario.UltimoLogin = DateTime.Now;
             usuario.HardwareIdSesion = hidActual;
-            usuario.PasswordHash = string.Empty;
+            usuario.PasswordHash = string.Empty; // Seguridad: Nunca devolver el hash al cliente
 
             Logger.WriteLog("Seguridad", "Login Exitoso", $"Usuario {username} ha ingresado en equipo {hidActual}.");
             return new ApiResponse<UsuarioDTO>(true, "Acceso concedido", usuario);
@@ -3348,23 +3190,21 @@ public class UsuarioService : IUsuarioService
 
     private string GenerarJwtToken(UsuarioDTO usuario)
     {
-        // 1. LEEMOS LA CLAVE DIRECTO DE APPSETTINGS (Evitamos claves temporales fijas)
         var secretKey = _config["Jwt:Key"] ?? "EstaEsUnaClaveSecretaMuyLargaDeAlMenos32Caracteres2026!";
         var key = Encoding.ASCII.GetBytes(secretKey);
 
+        // Los Claims deben coincidir EXACTAMENTE con lo que busca tu BaseController
         var tokenDescriptor = new SecurityTokenDescriptor
         {
             Subject = new ClaimsIdentity(new[]
             {
-                new Claim(ClaimTypes.NameIdentifier, usuario.Id.ToString()),
+                new Claim("id", usuario.Id.ToString()),
                 new Claim(ClaimTypes.Name, usuario.Username),
-                new Claim("RolId", usuario.RolId.ToString()),
-                new Claim("SucursalId", usuario.SucursalId.ToString()),
-                // Importante: Mandar el JSON de permisos para que el API lo reconstruya
-                new Claim("Permisos", usuario.PermisosJson ?? "{}")
+                new Claim("rolId", usuario.RolId.ToString()),
+                new Claim("sucursalId", usuario.SucursalId.ToString()),
+                new Claim("permisos", usuario.PermisosJson ?? "{}")
             }),
             Expires = DateTime.UtcNow.AddHours(12),
-            // Aseguramos que el Issuer y Audience coincidan si están en el Program.cs
             Issuer = _config["Jwt:Issuer"],
             Audience = _config["Jwt:Audience"],
             SigningCredentials = new SigningCredentials(
@@ -3377,12 +3217,13 @@ public class UsuarioService : IUsuarioService
         return tokenHandler.WriteToken(token);
     }
 
-    // ... Resto de los métodos del servicio permanecen igual
     public ApiResponse<bool> Registrar(UsuarioDTO usuario, UsuarioDTO ejecutor)
     {
         try
         {
             Guard.AgainstNull(usuario, nameof(usuario));
+
+            // Usamos las validaciones directas del DTO
             if (!ejecutor.TienePermiso("usuarios"))
                 return new ApiResponse<bool>(false, "No tiene permisos para registrar usuarios.");
 
@@ -3393,7 +3234,6 @@ public class UsuarioService : IUsuarioService
             if (existente != null)
                 return new ApiResponse<bool>(false, "El nombre de usuario ya está en uso");
 
-            if (usuario.RolId == 0) usuario.RolId = 2;
             usuario.PasswordHash = PasswordHasher.HashPassword(usuario.Password);
             _factory.Create(usuario, ejecutor);
 
@@ -3442,6 +3282,9 @@ public class UsuarioService : IUsuarioService
     {
         try
         {
+            if (!ejecutor.TienePermiso("usuarios"))
+                return new ApiResponse<List<UsuarioDTO>>(false, "No tiene permisos para ver esta lista.");
+
             var usuarios = _factory.GetAll(ejecutor);
             usuarios.ForEach(u => u.PasswordHash = string.Empty);
             return new ApiResponse<List<UsuarioDTO>>(true, "Lista cargada", usuarios);
@@ -3484,7 +3327,9 @@ public class UsuarioService : IUsuarioService
 --- RUTA: C:\Users\Luis\source\repos\Integra\IntegraPro\IntegraPro.AppLogic\Services\VentaService.cs --- 
 --- NOMBRE: VentaService.cs --- 
  
-﻿using IntegraPro.DataAccess.Factory;
+﻿using IntegraPro.AppLogic.Interfaces;
+using IntegraPro.AppLogic.Utils;
+using IntegraPro.DataAccess.Factory;
 using IntegraPro.DTO.Models;
 using System.Data;
 
@@ -3494,84 +3339,110 @@ public class VentaService(
     VentaFactory ventaFactory,
     ClienteFactory cliFactory,
     ProductoFactory prodFactory,
-    ConfiguracionFactory configFactory)
+    ConfiguracionFactory configFactory) : IVentaService
 {
     private readonly VentaFactory _ventaFactory = ventaFactory;
     private readonly ClienteFactory _cliFactory = cliFactory;
     private readonly ProductoFactory _prodFactory = prodFactory;
     private readonly ConfiguracionFactory _configFactory = configFactory;
 
-    public string ProcesarVenta(FacturaDTO factura, UsuarioDTO ejecutor)
+    public ApiResponse<string> ProcesarVenta(FacturaDTO factura, UsuarioDTO ejecutor)
     {
-        // 1. VALIDACIÓN DE STOCK (Considerando configuración de empresa)
-        var empresa = _configFactory.ObtenerEmpresa();
-        bool permitirNegativo = empresa?.PermitirStockNegativo ?? false;
-
-        if (!permitirNegativo)
+        try
         {
-            foreach (var det in factura.Detalles)
+            // CORRECCIÓN: Ahora pasamos el ejecutor a ObtenerEmpresa
+            var empresa = _configFactory.ObtenerEmpresa(ejecutor);
+            bool permitirNegativo = empresa?.PermitirStockNegativo ?? false;
+
+            if (!permitirNegativo)
             {
-                // Usamos el ejecutor para asegurar que el producto se busque en su sucursal
-                var producto = _prodFactory.GetById(det.ProductoId, ejecutor);
-
-                if (producto == null)
-                    throw new Exception($"El producto con ID {det.ProductoId} no está disponible en su sucursal.");
-
-                if (producto.Existencia < det.Cantidad)
+                foreach (var det in factura.Detalles)
                 {
-                    throw new Exception($"Stock insuficiente para '{producto.Nombre}'. " +
-                                        $"Solicitado: {det.Cantidad:N2}, Disponible: {producto.Existencia:N2}.");
+                    var producto = _prodFactory.GetById(det.ProductoId, ejecutor);
+
+                    if (producto == null)
+                        return new ApiResponse<string>(false, $"El producto ID {det.ProductoId} no está disponible.");
+
+                    if (producto.Existencia < det.Cantidad)
+                    {
+                        return new ApiResponse<string>(false, $"Stock insuficiente para '{producto.Nombre}'. " +
+                                                              $"Solicitado: {det.Cantidad:N2}, Disponible: {producto.Existencia:N2}.");
+                    }
                 }
             }
-        }
 
-        // 2. VALIDACIÓN DE CRÉDITO
-        if (factura.CondicionVenta != null && factura.CondicionVenta.Equals("Credito", StringComparison.OrdinalIgnoreCase))
-        {
-            var (saldoActual, limite, activo) = _cliFactory.ObtenerEstadoCredito(factura.ClienteId);
-            if (!activo) throw new Exception("El cliente seleccionado se encuentra INACTIVO.");
-
-            if ((saldoActual + factura.TotalComprobante) > limite)
+            // 2. VALIDACIÓN DE CRÉDITO
+            if (factura.CondicionVenta != null && factura.CondicionVenta.Equals("Credito", StringComparison.OrdinalIgnoreCase))
             {
-                throw new Exception($"Límite de crédito excedido. Saldo: {saldoActual:N2}, Límite: {limite:N2}.");
+                var (saldoActual, limite, activo) = _cliFactory.ObtenerEstadoCredito(factura.ClienteId);
+                if (!activo) return new ApiResponse<string>(false, "El cliente seleccionado se encuentra INACTIVO para crédito.");
+
+                if ((saldoActual + factura.TotalComprobante) > limite)
+                {
+                    return new ApiResponse<string>(false, $"Límite de crédito excedido. Saldo: {saldoActual:N2}, Límite: {limite:N2}.");
+                }
             }
+
+            // 3. EJECUCIÓN (Ya pasaba el ejecutor correctamente)
+            string consecutivoGenerado = _ventaFactory.CrearFactura(factura, ejecutor);
+
+            // 4. ACTUALIZAR SALDO
+            if (factura.CondicionVenta != null && factura.CondicionVenta.Equals("Credito", StringComparison.OrdinalIgnoreCase))
+            {
+                _cliFactory.ActualizarSaldo(factura.ClienteId, factura.TotalComprobante);
+            }
+
+            return new ApiResponse<string>(true, "Venta procesada con éxito", consecutivoGenerado);
         }
-
-        // 3. EJECUCIÓN (Pasando el ejecutor para auditoría y sucursal_limit)
-        string consecutivoGenerado = _ventaFactory.CrearFactura(factura, ejecutor);
-
-        // 4. ACTUALIZAR SALDO (Solo si es Crédito)
-        if (factura.CondicionVenta != null && factura.CondicionVenta.Equals("Credito", StringComparison.OrdinalIgnoreCase))
+        catch (Exception ex)
         {
-            _cliFactory.ActualizarSaldo(factura.ClienteId, factura.TotalComprobante);
+            Logger.WriteLog("Error", "ProcesarVenta", ex.Message);
+            return new ApiResponse<string>(false, $"Error al procesar la venta: {ex.Message}");
         }
-
-        return consecutivoGenerado;
     }
 
-    /// <summary>
-    /// Obtiene el reporte de ventas aplicando filtros y seguridad de sucursal.
-    /// </summary>
-    public DataTable ObtenerReporteVentas(DateTime? desde, DateTime? hasta, int? clienteId, string busqueda, string? condicionVenta, UsuarioDTO ejecutor)
+    public ApiResponse<DataTable> ObtenerReporteVentas(DateTime? desde, DateTime? hasta, int? clienteId, string busqueda, string? condicionVenta, UsuarioDTO ejecutor)
     {
-        return _ventaFactory.ObtenerReporteVentas(desde, hasta, clienteId, busqueda, condicionVenta ?? "", ejecutor);
-    }
-
-    public FacturaDTO? ObtenerFacturaParaImpresion(int id, UsuarioDTO ejecutor)
-    {
-        var factura = _ventaFactory.ObtenerPorId(id, ejecutor);
-
-        if (factura != null)
+        try
         {
-            factura.Detalles = _ventaFactory.ListarDetalles(id);
+            var dt = _ventaFactory.ObtenerReporteVentas(desde, hasta, clienteId, busqueda, condicionVenta ?? "", ejecutor);
+            return new ApiResponse<DataTable>(true, "Reporte generado", dt);
         }
-
-        return factura;
+        catch (Exception ex)
+        {
+            return new ApiResponse<DataTable>(false, ex.Message);
+        }
     }
 
-    public EmpresaDTO ObtenerEmpresa()
+    public ApiResponse<FacturaDTO> ObtenerFacturaParaImpresion(int id, UsuarioDTO ejecutor)
     {
-        return _configFactory.ObtenerEmpresa();
+        try
+        {
+            var factura = _ventaFactory.ObtenerPorId(id, ejecutor);
+            if (factura != null)
+            {
+                factura.Detalles = _ventaFactory.ListarDetalles(id);
+                return new ApiResponse<FacturaDTO>(true, "Factura cargada", factura);
+            }
+            return new ApiResponse<FacturaDTO>(false, "No se encontró la factura.");
+        }
+        catch (Exception ex)
+        {
+            return new ApiResponse<FacturaDTO>(false, ex.Message);
+        }
+    }
+
+    public ApiResponse<EmpresaDTO> ObtenerEmpresa(UsuarioDTO ejecutor)
+    {
+        try
+        {
+            // CORRECCIÓN: Se agrega el parámetro ejecutor al método y se pasa a la Factory
+            return new ApiResponse<EmpresaDTO>(true, "Datos de empresa cargados", _configFactory.ObtenerEmpresa(ejecutor));
+        }
+        catch (Exception ex)
+        {
+            return new ApiResponse<EmpresaDTO>(false, ex.Message);
+        }
     }
 }.
  
@@ -4148,6 +4019,8 @@ public class AbonoFactory(string connectionString) : MasterDao(connectionString)
 using IntegraPro.DTO.Models;
 using Microsoft.Data.SqlClient;
 using System.Data;
+using System.Collections.Generic;
+using System;
 
 namespace IntegraPro.DataAccess.Factory;
 
@@ -4155,7 +4028,7 @@ public class CajaFactory(string connectionString) : MasterDao(connectionString)
 {
     public int AbrirCaja(CajaAperturaDTO apertura, UsuarioDTO ejecutor)
     {
-        // 1. SEGURIDAD: Usar los nuevos helpers del DTO
+        // 1. SEGURIDAD: Validar acceso y escritura
         ejecutor.ValidarAcceso("caja");
         ejecutor.ValidarEscritura();
 
@@ -4187,7 +4060,6 @@ public class CajaFactory(string connectionString) : MasterDao(connectionString)
         var sid = dtInfo.Rows[0]["sucursal_id"];
         var fechaApertura = dtInfo.Rows[0]["fecha_apertura"];
 
-        // Lógica de cálculo original (Intacta)
         string sqlCierre = @"
             DECLARE @ventas decimal(18,2) = (SELECT ISNULL(SUM(total_comprobante),0) FROM FACTURA_ENCABEZADO 
                                             WHERE sucursal_id = @sid AND fecha >= @fecha AND medio_pago = 'Efectivo');
@@ -4218,17 +4090,23 @@ public class CajaFactory(string connectionString) : MasterDao(connectionString)
 
     public List<object> ObtenerHistorialCierres(UsuarioDTO ejecutor)
     {
-        // 3. SEGURIDAD: Filtrado automático por sucursal usando el DTO
+        // 3. SEGURIDAD: Lógica de prioridad de permisos
+        // Si el usuario tiene el permiso 'all', el filtro permanece vacío y ve todo.
+        string sucursalFilter = "";
+        List<SqlParameter> parametros = new List<SqlParameter>();
+
+        if (!ejecutor.TienePermiso("all") && ejecutor.TienePermiso("sucursal_limit"))
+        {
+            // Ahora que la vista tiene sucursal_id, podemos filtrar sin errores
+            sucursalFilter = " WHERE sucursal_id = @sid";
+            parametros.Add(new SqlParameter("@sid", ejecutor.SucursalId));
+        }
+
         string sql = $@"SELECT * FROM VW_REPORTE_CIERRES_CAJA 
-                        WHERE {ejecutor.GetFiltroSucursal()} 
+                        {sucursalFilter} 
                         ORDER BY fecha_cierre DESC";
 
-        // Al usar GetFiltroSucursal(), el DTO decide si inyecta "sucursal_id = @sid" o "1=1"
-        var p = (ejecutor.RolId != 1)
-                ? new[] { new SqlParameter("@sid", ejecutor.SucursalId) }
-                : null;
-
-        var dt = ExecuteQuery(sql, p, false);
+        var dt = ExecuteQuery(sql, parametros.Count > 0 ? parametros.ToArray() : null, false);
         var lista = new List<object>();
 
         if (dt == null) return lista;
@@ -4242,6 +4120,9 @@ public class CajaFactory(string connectionString) : MasterDao(connectionString)
                 Cajero = row["cajero"].ToString(),
                 Apertura = row["fecha_apertura"],
                 Cierre = row["fecha_cierre"],
+                MontoInicial = row["monto_inicial"],
+                VentasEfectivo = row["ventas_efectivo"],
+                AbonosEfectivo = row["abonos_efectivo"],
                 Esperado = row["esperado_caja"],
                 Real = row["real_caja"],
                 Diferencia = row["diferencia"],
@@ -4317,16 +4198,17 @@ namespace IntegraPro.DataAccess.Factory;
 
 public class ClienteFactory(string connectionString) : MasterDao(connectionString)
 {
-    // 1. OBTENER TODOS (Añadida seguridad de acceso)
+    // 1. OBTENER TODOS (Clientes globales)
     public List<ClienteDTO> ObtenerTodos(UsuarioDTO ejecutor)
     {
-        // Seguridad: El Service ya valida, pero aquí aseguramos que tiene permiso al módulo
+        // El ejecutor debe tener permiso para ver el módulo de clientes
         ejecutor.ValidarAcceso("clientes");
 
         string sql = "SELECT id, identificacion, nombre, correo, telefono, limite_credito, activo FROM CLIENTE";
-        var dt = ExecuteQuery(sql, null, false);
 
+        var dt = ExecuteQuery(sql, null, false);
         var lista = new List<ClienteDTO>();
+
         if (dt == null) return lista;
 
         foreach (DataRow row in dt.Rows)
@@ -4345,10 +4227,9 @@ public class ClienteFactory(string connectionString) : MasterDao(connectionStrin
         return lista;
     }
 
-    // 2. INSERTAR (Reemplazada validación manual por ValidarEscritura)
+    // 2. INSERTAR (Sin sucursal_id)
     public int Insertar(ClienteDTO cliente, UsuarioDTO ejecutor)
     {
-        // SEGURIDAD CENTRALIZADA
         ejecutor.ValidarAcceso("clientes");
         ejecutor.ValidarEscritura();
 
@@ -4369,14 +4250,12 @@ public class ClienteFactory(string connectionString) : MasterDao(connectionStrin
         return dt.Rows.Count > 0 ? Convert.ToInt32(dt.Rows[0][0]) : 0;
     }
 
-    // 3. ACTUALIZAR (Mantenida tu lógica de CASE WHEN + Seguridad)
+    // 3. ACTUALIZAR
     public bool Actualizar(ClienteDTO cliente, UsuarioDTO ejecutor)
     {
-        // SEGURIDAD CENTRALIZADA
         ejecutor.ValidarAcceso("clientes");
         ejecutor.ValidarEscritura();
 
-        // Mantenemos tu lógica intacta para proteger contra "string" nulos/vacíos
         string sql = @"UPDATE CLIENTE SET 
                     identificacion = CASE 
                         WHEN @ident <> 'string' AND ISNULL(@ident, '') <> '' THEN @ident 
@@ -4410,9 +4289,10 @@ public class ClienteFactory(string connectionString) : MasterDao(connectionStrin
         return true;
     }
 
-    // 4. ESTADO DE CRÉDITO (Interno de negocio, sin cambios de seguridad requeridos aquí)
+    // 4. ESTADO DE CRÉDITO
     public (decimal saldo, decimal limite, bool activo) ObtenerEstadoCredito(int clienteId)
     {
+        // Se asume que el campo en SQL es saldo_pendiente
         string sql = "SELECT ISNULL(saldo_pendiente, 0) as saldo_pendiente, limite_credito, activo FROM CLIENTE WHERE id = @id";
         var dt = ExecuteQuery(sql, new[] { new SqlParameter("@id", clienteId) }, false);
 
@@ -4427,21 +4307,22 @@ public class ClienteFactory(string connectionString) : MasterDao(connectionStrin
         return (0, 0, false);
     }
 
-    // 5. ACTUALIZAR SALDO (Lógica interna del sistema)
+    // 5. ACTUALIZAR SALDO
     public void ActualizarSaldo(int clienteId, decimal monto)
     {
         string sql = "UPDATE CLIENTE SET saldo_pendiente = ISNULL(saldo_pendiente, 0) + @monto WHERE id = @id";
-        var p = new[] {
+        ExecuteNonQuery(sql, [
             new SqlParameter("@monto", monto),
             new SqlParameter("@id", clienteId)
-        };
-        ExecuteNonQuery(sql, p, false);
+        ], false);
     }
 
-    // 6. BUSCAR POR IDENTIFICACIÓN (Añadido ejecutor opcional para coherencia)
-    public ClienteDTO? ObtenerPorIdentificacion(string identificacion)
+    // 6. BUSCAR POR IDENTIFICACIÓN (Sincronizado con Service)
+    public ClienteDTO? ObtenerPorIdentificacion(string identificacion, UsuarioDTO ejecutor)
     {
+        // Nota: No filtramos por sucursal_id porque me indicas que no existe en la tabla.
         string sql = "SELECT * FROM CLIENTE WHERE identificacion = @cedula";
+
         var dt = ExecuteQuery(sql, [new SqlParameter("@cedula", identificacion)], false);
 
         if (dt == null || dt.Rows.Count == 0) return null;
@@ -4478,18 +4359,13 @@ public class CompraFactory(string connectionString) : MasterDao(connectionString
 
     public void ProcesarCompra(CompraDTO compra, UsuarioDTO ejecutor)
     {
-        // === INTEGRACIÓN DE SEGURIDAD ROBUSTA (MODIFICADO PARA DIAGNÓSTICO) ===
-
-        // Si el diccionario de permisos está vacío, lanzamos un error detallado para saber qué está llegando
+        // === INTEGRACIÓN DE SEGURIDAD ROBUSTA ===
         if (ejecutor.Permisos == null || ejecutor.Permisos.Count == 0)
         {
             throw new UnauthorizedAccessException($"Acceso denegado: El sistema no detectó permisos cargados. (JSON: {ejecutor.PermisosJson})");
         }
 
-        // 1. Verificamos si es Admin o tiene el permiso específico
         bool tieneAcceso = ejecutor.TienePermiso("all") || ejecutor.TienePermiso("compras");
-
-        // 2. Verificamos la restricción de solo_lectura directamente en el diccionario
         bool esSoloLectura = ejecutor.Permisos.TryGetValue("solo_lectura", out bool sl) && sl;
 
         if (!tieneAcceso)
@@ -4498,10 +4374,13 @@ public class CompraFactory(string connectionString) : MasterDao(connectionString
         if (esSoloLectura)
             throw new UnauthorizedAccessException("Su usuario tiene restricciones de solo lectura y no puede realizar transacciones.");
 
-        // ==========================================
-
-        if (ejecutor.TienePermiso("sucursal_limit"))
+        // ASIGNACIÓN DE SUCURSAL: 
+        // Si el usuario es 'all', respetamos la sucursal que venga en el DTO (permitiendo compras inter-sucursales).
+        // Si NO es 'all' y tiene 'sucursal_limit', forzamos su propia sucursal.
+        if (!ejecutor.TienePermiso("all") && ejecutor.TienePermiso("sucursal_limit"))
+        {
             compra.SucursalId = ejecutor.SucursalId;
+        }
 
         using var conn = new SqlConnection(_connectionString);
         conn.Open();
@@ -4596,9 +4475,12 @@ public class CompraFactory(string connectionString) : MasterDao(connectionString
         var lista = new List<DeudaConsultaDTO>();
         using var conn = new SqlConnection(_connectionString);
 
-        string sucursalFilter = ejecutor.TienePermiso("sucursal_limit")
-            ? $" AND CompraId IN (SELECT id FROM COMPRA_ENCABEZADO WHERE sucursal_id = {ejecutor.SucursalId})"
-            : "";
+        // LÓGICA DE FILTRADO POR SUCURSAL
+        string sucursalFilter = "";
+        if (!ejecutor.TienePermiso("all") && ejecutor.TienePermiso("sucursal_limit"))
+        {
+            sucursalFilter = $" AND CompraId IN (SELECT id FROM COMPRA_ENCABEZADO WHERE sucursal_id = {ejecutor.SucursalId})";
+        }
 
         string sql = $@"SELECT * FROM VW_CONSULTA_DEUDAS 
                        WHERE (ProveedorCedula LIKE @f 
@@ -4739,7 +4621,8 @@ public class CompraFactory(string connectionString) : MasterDao(connectionString
 
             if (detalles.Count == 0) throw new Exception("Compra no encontrada o no es anulable.");
 
-            if (ejecutor.TienePermiso("sucursal_limit") && detalles[0].sId != ejecutor.SucursalId)
+            // Validamos sucursal solo si NO es administrador global
+            if (!ejecutor.TienePermiso("all") && ejecutor.TienePermiso("sucursal_limit") && detalles[0].sId != ejecutor.SucursalId)
                 throw new UnauthorizedAccessException("No puede anular compras de otra sucursal.");
 
             foreach (var det in detalles)
@@ -4778,8 +4661,11 @@ public class CompraFactory(string connectionString) : MasterDao(connectionString
     {
         var alertas = new List<AlertaPagoDTO>();
         string sql = "SELECT * FROM VW_ALERTA_CUENTAS_PAGAR_PROXIMAS";
-        if (ejecutor.TienePermiso("sucursal_limit"))
+
+        // Filtramos por sucursal solo si NO es 'all'
+        if (!ejecutor.TienePermiso("all") && ejecutor.TienePermiso("sucursal_limit"))
             sql += " WHERE sucursal_id = " + ejecutor.SucursalId;
+
         sql += " ORDER BY fecha_vencimiento ASC";
 
         var dt = ExecuteQuery(sql, null, false);
@@ -4800,9 +4686,12 @@ public class CompraFactory(string connectionString) : MasterDao(connectionString
 
     public ResumenCxpDTO ObtenerResumenGeneralCxp(UsuarioDTO ejecutor)
     {
-        string filter = ejecutor.TienePermiso("sucursal_limit")
-            ? $" AND C.compra_id IN (SELECT id FROM COMPRA_ENCABEZADO WHERE sucursal_id = {ejecutor.SucursalId})"
-            : "";
+        // El administrador global (all) ve el consolidado de todas las sucursales.
+        string filter = "";
+        if (!ejecutor.TienePermiso("all") && ejecutor.TienePermiso("sucursal_limit"))
+        {
+            filter = $" AND C.compra_id IN (SELECT id FROM COMPRA_ENCABEZADO WHERE sucursal_id = {ejecutor.SucursalId})";
+        }
 
         string sql = $@"SELECT 
                         SUM(saldo_pendiente) as TotalGlobal,
@@ -5161,21 +5050,30 @@ namespace IntegraPro.DataAccess.Factory;
 
 public class InventarioFactory(string connectionString) : MasterDao(connectionString)
 {
-    /// <summary>
-    /// Inserta un movimiento de inventario validando permisos y forzando la sucursal del ejecutor.
-    /// </summary>
     public bool Insertar(MovimientoInventarioDTO dto, UsuarioDTO ejecutor)
     {
-        // 1. SEGURIDAD ESTÁNDAR
+        // 1. SEGURIDAD BÁSICA
         ejecutor.ValidarAcceso("inventario");
         ejecutor.ValidarEscritura();
 
-        // 2. SEGURIDAD DE SUCURSAL
-        // Si el usuario tiene restricción de sucursal, ignoramos lo que venga en el DTO 
-        // y forzamos su propia SucursalId para evitar que afecte stock de otras sedes.
-        int sucursalDestino = ejecutor.TienePermiso("sucursal_limit")
-            ? ejecutor.SucursalId
-            : dto.SucursalId;
+        // 2. LÓGICA DE PRIORIDAD DE SUCURSAL (EL CORAZÓN DEL CAMBIO)
+        int sucursalDestino;
+
+        // Si es 'all', el administrador manda y el JSON manda.
+        if (ejecutor.TienePermiso("all"))
+        {
+            sucursalDestino = dto.SucursalId; // Aquí ya tomará el 3 del JSON
+        }
+        // Si NO es 'all' pero tiene límite, forzamos su sede.
+        else if (ejecutor.TienePermiso("sucursal_limit"))
+        {
+            sucursalDestino = ejecutor.SucursalId;
+        }
+        // Caso por defecto (seguridad)
+        else
+        {
+            sucursalDestino = dto.SucursalId;
+        }
 
         string sql = @"INSERT INTO MOVIMIENTO_INVENTARIO 
                        (producto_id, usuario_id, sucursal_id, tipo_movimiento, cantidad, documento_referencia, notas) 
@@ -5184,7 +5082,7 @@ public class InventarioFactory(string connectionString) : MasterDao(connectionSt
         var p = new[] {
             new SqlParameter("@pid", dto.ProductoId),
             new SqlParameter("@uid", ejecutor.Id),
-            new SqlParameter("@sid", sucursalDestino),
+            new SqlParameter("@sid", sucursalDestino), // Usamos la variable calculada
             new SqlParameter("@tipo", dto.TipoMovimiento.ToUpper()),
             new SqlParameter("@cant", dto.Cantidad),
             new SqlParameter("@ref", (object?)dto.DocumentoReferencia ?? DBNull.Value),
@@ -5198,22 +5096,21 @@ public class InventarioFactory(string connectionString) : MasterDao(connectionSt
         }
         catch (Exception)
         {
-            // El error subirá al Service para ser encapsulado en el ApiResponse
             throw;
         }
     }
 
-    /// <summary>
-    /// Consulta el historial con filtrado automático por sucursal según el perfil.
-    /// </summary>
     public DataTable ObtenerHistorial(UsuarioDTO ejecutor, int? productoId, DateTime? desde, DateTime? hasta)
     {
-        // 1. SEGURIDAD: Debe tener permiso de inventario o auditoría para ver estos datos
         if (!ejecutor.TienePermiso("inventario") && !ejecutor.TienePermiso("auditoria"))
-            throw new UnauthorizedAccessException("No tiene permisos para consultar el historial de movimientos.");
+            throw new UnauthorizedAccessException("No tiene permisos para consultar el historial.");
 
-        // 2. FILTRADO AUTOMÁTICO DE SUCURSAL
-        int? sIdFiltro = ejecutor.TienePermiso("sucursal_limit") ? (int?)ejecutor.SucursalId : null;
+        // Aplicamos la misma jerarquía para la visualización
+        int? sIdFiltro = null;
+        if (!ejecutor.TienePermiso("all") && ejecutor.TienePermiso("sucursal_limit"))
+        {
+            sIdFiltro = ejecutor.SucursalId;
+        }
 
         string sql = @"SELECT m.*, p.nombre as ProductoNombre, u.username as UsuarioNombre, s.nombre as SucursalNombre
                        FROM MOVIMIENTO_INVENTARIO m
@@ -5230,7 +5127,6 @@ public class InventarioFactory(string connectionString) : MasterDao(connectionSt
             parametros.Add(new SqlParameter("@pid", productoId.Value));
         }
 
-        // Aplicamos el blindaje si el usuario es limitado
         if (sIdFiltro.HasValue)
         {
             sql += " AND m.sucursal_id = @sid";
@@ -5246,7 +5142,6 @@ public class InventarioFactory(string connectionString) : MasterDao(connectionSt
         if (hasta.HasValue)
         {
             sql += " AND m.fecha <= @hasta";
-            // Normalización del fin del día (23:59:59)
             parametros.Add(new SqlParameter("@hasta", hasta.Value.Date.AddDays(1).AddSeconds(-1)));
         }
 
@@ -5264,6 +5159,8 @@ using IntegraPro.DataAccess.Mappers;
 using IntegraPro.DTO.Models;
 using Microsoft.Data.SqlClient;
 using System.Data;
+using System.Collections.Generic;
+using System;
 
 namespace IntegraPro.DataAccess.Factory;
 
@@ -5271,29 +5168,57 @@ public class ProductoFactory(string connectionString) : MasterDao(connectionStri
 {
     private readonly ProductoMapper _mapper = new();
 
-    /// <summary>
-    /// Obtiene todos los productos filtrando por sucursal si el usuario tiene restricciones.
-    /// </summary>
     public List<ProductoDTO> GetAll(UsuarioDTO ejecutor)
     {
-        ejecutor.ValidarAcceso("productos"); // Validación preventiva de módulo
+        ejecutor.ValidarAcceso("productos");
 
-        string sql = "SELECT p.* FROM PRODUCTO p";
-        SqlParameter[]? parameters = null;
+        string sql;
+        List<SqlParameter> parameters = new();
 
-        if (ejecutor.TienePermiso("sucursal_limit"))
+        if (!ejecutor.TienePermiso("all") && ejecutor.TienePermiso("sucursal_limit"))
         {
-            sql += " INNER JOIN PRODUCTO_SUCURSAL ps ON p.id = ps.producto_id WHERE p.activo = 1 AND ps.sucursal_id = @sucId";
-            parameters = [new SqlParameter("@sucId", ejecutor.SucursalId)];
+            sql = @"SELECT p.*, ps.sucursal_id, s.nombre as sucursal_nombre, ps.existencia as existencia_local 
+                FROM PRODUCTO p 
+                INNER JOIN PRODUCTO_SUCURSAL ps ON p.id = ps.producto_id 
+                INNER JOIN SUCURSAL s ON ps.sucursal_id = s.id
+                WHERE p.activo = 1 AND ps.sucursal_id = @sucId";
+
+            parameters.Add(new SqlParameter("@sucId", ejecutor.SucursalId));
         }
         else
         {
-            sql += " WHERE p.activo = 1";
+            sql = @"SELECT p.*, 
+                           ps.sucursal_id, 
+                           s.nombre as sucursal_nombre,
+                           ps.existencia as existencia_local,
+                           (SELECT SUM(existencia) FROM PRODUCTO_SUCURSAL WHERE producto_id = p.id) as existencia_total
+                FROM PRODUCTO p
+                LEFT JOIN PRODUCTO_SUCURSAL ps ON p.id = ps.producto_id
+                LEFT JOIN SUCURSAL s ON ps.sucursal_id = s.id
+                WHERE p.activo = 1";
         }
 
-        var dt = ExecuteQuery(sql, parameters, false);
+        var dt = ExecuteQuery(sql, parameters.Count > 0 ? parameters.ToArray() : null, false);
         var lista = new List<ProductoDTO>();
-        foreach (DataRow row in dt.Rows) lista.Add(_mapper.MapFromRow(row));
+
+        foreach (DataRow row in dt.Rows)
+        {
+            var dto = _mapper.MapFromRow(row);
+
+            if (row.Table.Columns.Contains("sucursal_nombre") && row["sucursal_nombre"] != DBNull.Value)
+            {
+                dto.Descripcion = $"[Sede: {row["sucursal_nombre"]}] " + (dto.Descripcion ?? "");
+            }
+
+            if (row.Table.Columns.Contains("existencia_total"))
+            {
+                dto.Existencia = row["existencia_total"] != DBNull.Value
+                                 ? Convert.ToDecimal(row["existencia_total"])
+                                 : 0m;
+            }
+
+            lista.Add(dto);
+        }
         return lista;
     }
 
@@ -5301,12 +5226,15 @@ public class ProductoFactory(string connectionString) : MasterDao(connectionStri
     {
         ejecutor.ValidarAcceso("productos");
 
-        string sql = "SELECT p.* FROM PRODUCTO p";
+        string sql = @"SELECT p.*, ps.sucursal_id, ps.existencia as existencia_local 
+                       FROM PRODUCTO p 
+                       LEFT JOIN PRODUCTO_SUCURSAL ps ON p.id = ps.producto_id";
+
         List<SqlParameter> parameters = [new SqlParameter("@id", id)];
 
-        if (ejecutor.TienePermiso("sucursal_limit"))
+        if (!ejecutor.TienePermiso("all") && ejecutor.TienePermiso("sucursal_limit"))
         {
-            sql += " INNER JOIN PRODUCTO_SUCURSAL ps ON p.id = ps.producto_id WHERE p.id = @id AND ps.sucursal_id = @sucId";
+            sql += " WHERE p.id = @id AND ps.sucursal_id = @sucId";
             parameters.Add(new SqlParameter("@sucId", ejecutor.SucursalId));
         }
         else
@@ -5323,7 +5251,7 @@ public class ProductoFactory(string connectionString) : MasterDao(connectionStri
         ejecutor.ValidarAcceso("productos");
         ejecutor.ValidarEscritura();
 
-        if (ejecutor.TienePermiso("sucursal_limit"))
+        if (!ejecutor.TienePermiso("all") && ejecutor.TienePermiso("sucursal_limit"))
             producto.SucursalId = ejecutor.SucursalId;
 
         object result = ExecuteScalar("sp_Producto_Insert", _mapper.MapToParameters(producto).ToArray(), true);
@@ -5335,9 +5263,8 @@ public class ProductoFactory(string connectionString) : MasterDao(connectionStri
         ejecutor.ValidarAcceso("productos");
         ejecutor.ValidarEscritura();
 
-        if (ejecutor.TienePermiso("sucursal_limit"))
+        if (!ejecutor.TienePermiso("all") && ejecutor.TienePermiso("sucursal_limit"))
         {
-            // Validamos que el producto realmente pertenezca a la sucursal del usuario antes de actualizar
             var prodActual = GetById(producto.Id, ejecutor);
             if (prodActual == null)
                 throw new UnauthorizedAccessException("No tiene permisos para modificar este producto en su sucursal.");
@@ -5348,45 +5275,12 @@ public class ProductoFactory(string connectionString) : MasterDao(connectionStri
         ExecuteNonQuery("sp_Producto_Update", _mapper.MapToParameters(producto).ToArray(), true);
     }
 
-    public void InsertarComposicion(int padreId, int materialId, decimal cantidad, UsuarioDTO ejecutor)
-    {
-        ejecutor.ValidarAcceso("productos");
-        ejecutor.ValidarEscritura();
-
-        var parameters = new[]
-        {
-            new SqlParameter("@producto_padre_id", padreId),
-            new SqlParameter("@material_id", materialId),
-            new SqlParameter("@cantidad_necesaria", cantidad)
-        };
-
-        string sql = "INSERT INTO PRODUCTO_COMPOSICION (producto_padre_id, material_id, cantidad_necesaria) VALUES (@producto_padre_id, @material_id, @cantidad_necesaria)";
-        ExecuteNonQuery(sql, parameters, false);
-    }
-
-    public List<ProductoComposicionDTO> ObtenerComposicion(int padreId)
-    {
-        // Este método suele ser interno para procesos de producción, no requiere validación de escritura
-        var parameters = new[] { new SqlParameter("@id", padreId) };
-        var dt = ExecuteQuery("SELECT material_id, cantidad_necesaria FROM PRODUCTO_COMPOSICION WHERE producto_padre_id = @id", parameters, false);
-
-        var lista = new List<ProductoComposicionDTO>();
-        foreach (DataRow row in dt.Rows)
-        {
-            lista.Add(new ProductoComposicionDTO
-            {
-                MaterialId = Convert.ToInt32(row["material_id"]),
-                CantidadNecesaria = Convert.ToDecimal(row["cantidad_necesaria"])
-            });
-        }
-        return lista;
-    }
-
     public List<ProductoDTO> GetStockAlerts(UsuarioDTO ejecutor)
     {
         ejecutor.ValidarAcceso("productos");
 
-        string sql = @"SELECT p.id, p.nombre, p.stock_minimo, ps.existencia 
+        // Cambiamos p.id, p.nombre por p.* para que el Mapper no falle por columnas faltantes
+        string sql = @"SELECT p.*, ps.existencia as existencia_local, ps.sucursal_id 
                        FROM PRODUCTO p 
                        INNER JOIN PRODUCTO_SUCURSAL ps ON p.id = ps.producto_id 
                        WHERE ps.existencia <= p.stock_minimo 
@@ -5394,7 +5288,7 @@ public class ProductoFactory(string connectionString) : MasterDao(connectionStri
 
         List<SqlParameter> parameters = new();
 
-        if (ejecutor.TienePermiso("sucursal_limit"))
+        if (!ejecutor.TienePermiso("all") && ejecutor.TienePermiso("sucursal_limit"))
         {
             sql += " AND ps.sucursal_id = @sucId";
             parameters.Add(new SqlParameter("@sucId", ejecutor.SucursalId));
@@ -5404,12 +5298,35 @@ public class ProductoFactory(string connectionString) : MasterDao(connectionStri
         var lista = new List<ProductoDTO>();
         foreach (DataRow row in dt.Rows)
         {
-            lista.Add(new ProductoDTO
+            // Ahora el mapper recibirá todas las columnas y no dará error de DBNull
+            lista.Add(_mapper.MapFromRow(row));
+        }
+        return lista;
+    }
+
+    public void InsertarComposicion(int padreId, int materialId, decimal cantidad, UsuarioDTO ejecutor)
+    {
+        ejecutor.ValidarAcceso("productos");
+        ejecutor.ValidarEscritura();
+        var parameters = new[] {
+            new SqlParameter("@producto_padre_id", padreId),
+            new SqlParameter("@material_id", materialId),
+            new SqlParameter("@cantidad_necesaria", cantidad)
+        };
+        ExecuteNonQuery("INSERT INTO PRODUCTO_COMPOSICION (producto_padre_id, material_id, cantidad_necesaria) VALUES (@producto_padre_id, @material_id, @cantidad_necesaria)", parameters, false);
+    }
+
+    public List<ProductoComposicionDTO> ObtenerComposicion(int padreId)
+    {
+        var parameters = new[] { new SqlParameter("@id", padreId) };
+        var dt = ExecuteQuery("SELECT material_id, cantidad_necesaria FROM PRODUCTO_COMPOSICION WHERE producto_padre_id = @id", parameters, false);
+        var lista = new List<ProductoComposicionDTO>();
+        foreach (DataRow row in dt.Rows)
+        {
+            lista.Add(new ProductoComposicionDTO
             {
-                Id = Convert.ToInt32(row["id"]),
-                Nombre = row["nombre"].ToString() ?? "",
-                Existencia = Convert.ToDecimal(row["existencia"]),
-                StockMinimo = Convert.ToDecimal(row["stock_minimo"])
+                MaterialId = Convert.ToInt32(row["material_id"]),
+                CantidadNecesaria = Convert.ToDecimal(row["cantidad_necesaria"])
             });
         }
         return lista;
@@ -5430,19 +5347,18 @@ namespace IntegraPro.DataAccess.Factory;
 
 public class ProformaFactory(string connectionString) : MasterDao(connectionString)
 {
-    // Capturamos la cadena para evitar el conflicto del Primary Constructor en C# 12
     private readonly string _connectionString = connectionString;
 
-    // 1. CREAR PROFORMA CON REGLAS DE NEGOCIO
     public int CrearProforma(ProformaEncabezadoDTO p, UsuarioDTO ejecutor)
     {
         ejecutor.ValidarAcceso("proformas");
         ejecutor.ValidarEscritura();
 
-        if (ejecutor.TienePermiso("sucursal_limit"))
+        if (!ejecutor.TienePermiso("all") && ejecutor.TienePermiso("sucursal_limit"))
+        {
             p.SucursalId = ejecutor.SucursalId;
+        }
 
-        // Pasamos el ejecutor a la sub-factory para validar permisos de config
         var configFact = new ConfiguracionFactory(_connectionString);
         var empresa = configFact.ObtenerEmpresa(ejecutor);
         bool esTradicional = empresa?.TipoRegimen?.Equals("Tradicional", StringComparison.OrdinalIgnoreCase) ?? true;
@@ -5482,7 +5398,7 @@ public class ProformaFactory(string connectionString) : MasterDao(connectionStri
         var parametrosEnc = new[] {
             new SqlParameter("@cid", p.ClienteId == 0 ? DBNull.Value : p.ClienteId),
             new SqlParameter("@sid", p.SucursalId),
-            new SqlParameter("@fvenc", p.FechaVencimiento),
+            new SqlParameter("@fvenc", p.FechaVencimiento == DateTime.MinValue ? DateTime.Now.AddDays(30) : p.FechaVencimiento),
             new SqlParameter("@tneto", totalNetoAcumulado),
             new SqlParameter("@tiva", totalIVAAcumulado),
             new SqlParameter("@total", totalNetoAcumulado + totalIVAAcumulado)
@@ -5510,7 +5426,6 @@ public class ProformaFactory(string connectionString) : MasterDao(connectionStri
         return idGenerado;
     }
 
-    // 2. CONVERTIR A FACTURA (Transacción SQL Atómica)
     public string ConvertirAFactura(int proformaId, string medioPago, UsuarioDTO ejecutor)
     {
         ejecutor.ValidarAcceso("ventas");
@@ -5521,10 +5436,11 @@ public class ProformaFactory(string connectionString) : MasterDao(connectionStri
         BEGIN TRY
             DECLARE @clienteId INT, @sucursalId INT, @totalNeto DECIMAL(18,2), @totalImpuesto DECIMAL(18,2), 
                     @totalComprobante DECIMAL(18,2), @facturaId INT, @estadoActual NVARCHAR(20),
-                    @permitirNegativo BIT;
+                    @permitirNegativo BIT, @stockActual DECIMAL(18,2), @prodNombreErr NVARCHAR(200);
 
             DECLARE @consecutivo NVARCHAR(50) = 'FAC-' + CAST(NEXT VALUE FOR Seq_Consecutivos AS NVARCHAR(20));
 
+            -- 1. Obtener datos de la proforma para identificar la sucursal de ORIGEN
             SELECT @clienteId = cliente_id, @sucursalId = sucursal_id, @totalNeto = total_neto, 
                    @totalImpuesto = total_impuesto, @totalComprobante = total, @estadoActual = estado 
             FROM PROFORMA_ENCABEZADO WHERE id = @profId;
@@ -5533,21 +5449,29 @@ public class ProformaFactory(string connectionString) : MasterDao(connectionStri
 
             IF @clienteId IS NULL THROW 50000, 'La proforma no existe.', 1;
             IF @estadoActual <> 'Pendiente' THROW 50002, 'Solo se pueden facturar proformas Pendientes.', 1;
-            IF @sucursalLimit = 1 AND @sucursalId <> @userSucId THROW 50003, 'Acceso denegado: Proforma de otra sucursal.', 1;
+            
+            -- Validación de seguridad por sucursal si el usuario tiene limites
+            IF @esAdmin = 0 AND @sucursalLimit = 1 AND @sucursalId <> @userSucId 
+                THROW 50003, 'Acceso denegado: Proforma de otra sucursal.', 1;
 
+            -- 2. VALIDACIÓN DE STOCK REAL EN LA SUCURSAL DE LA PROFORMA
             IF ISNULL(@permitirNegativo, 0) = 0
             BEGIN
-                IF EXISTS (
-                    SELECT 1 
-                    FROM PROFORMA_DETALLE d
-                    JOIN PRODUCTO_SUCURSAL ps ON d.producto_id = ps.producto_id
-                    WHERE d.proforma_id = @profId AND ps.sucursal_id = @sucursalId AND ps.existencia < d.cantidad
-                )
+                -- Buscamos el primer producto que no tenga stock en la SUCURSAL DE LA PROFORMA (@sucursalId)
+                SELECT TOP 1 @prodNombreErr = p.nombre, @stockActual = ISNULL(ps.existencia, 0)
+                FROM PROFORMA_DETALLE d
+                INNER JOIN PRODUCTO p ON d.producto_id = p.id
+                LEFT JOIN PRODUCTO_SUCURSAL ps ON d.producto_id = ps.producto_id AND ps.sucursal_id = @sucursalId
+                WHERE d.proforma_id = @profId AND ISNULL(ps.existencia, 0) < d.cantidad;
+
+                IF @prodNombreErr IS NOT NULL
                 BEGIN
-                    THROW 50005, 'Stock insuficiente en la sucursal actual.', 1;
+                    DECLARE @msg NVARCHAR(300) = 'Stock insuficiente de ' + @prodNombreErr + ' en Sucursal ' + CAST(@sucursalId AS NVARCHAR) + '. Disponible: ' + CAST(@stockActual AS NVARCHAR);
+                    THROW 50005, @msg, 1;
                 END
             END
 
+            -- 3. Crear el encabezado de factura heredando la sucursal de la proforma
             INSERT INTO FACTURA_ENCABEZADO (cliente_id, sucursal_id, usuario_id, consecutivo, clave_numerica, 
                                           total_neto, total_descuento, total_impuesto, total_comprobante, medio_pago, 
                                           estado_hacienda, condicion_venta, fecha)
@@ -5556,14 +5480,17 @@ public class ProformaFactory(string connectionString) : MasterDao(connectionStri
             
             SET @facturaId = SCOPE_IDENTITY();
 
+            -- 4. Copiar detalles
             INSERT INTO FACTURA_DETALLE (factura_id, producto_id, cantidad, precio_unitario, porcentaje_descuento, monto_descuento, monto_impuesto, total_linea)
             SELECT @facturaId, d.producto_id, d.cantidad, d.precio_unitario, 0, 0, d.monto_impuesto, d.total_linea
             FROM PROFORMA_DETALLE d WHERE d.proforma_id = @profId;
 
+            -- 5. Generar movimientos de inventario en la SUCURSAL DE LA PROFORMA
             INSERT INTO MOVIMIENTO_INVENTARIO (producto_id, usuario_id, sucursal_id, fecha, tipo_movimiento, cantidad, documento_referencia, notas)
             SELECT d.producto_id, @usuarioId, @sucursalId, GETDATE(), 'SALIDA', d.cantidad, @consecutivo, 'Fact. desde Proforma #' + CAST(@profId AS NVARCHAR(10))
             FROM PROFORMA_DETALLE d WHERE d.proforma_id = @profId;
 
+            -- 6. Marcar proforma como procesada
             UPDATE PROFORMA_ENCABEZADO SET estado = 'Facturada' WHERE id = @profId;
 
             COMMIT TRANSACTION;
@@ -5579,6 +5506,7 @@ public class ProformaFactory(string connectionString) : MasterDao(connectionStri
             new SqlParameter("@usuarioId", ejecutor.Id),
             new SqlParameter("@userSucId", ejecutor.SucursalId),
             new SqlParameter("@sucursalLimit", ejecutor.TienePermiso("sucursal_limit") ? 1 : 0),
+            new SqlParameter("@esAdmin", ejecutor.TienePermiso("all") ? 1 : 0),
             new SqlParameter("@medioPago", medioPago)
         };
 
@@ -5586,7 +5514,6 @@ public class ProformaFactory(string connectionString) : MasterDao(connectionStri
         return result?.ToString() ?? string.Empty;
     }
 
-    // 3. ANULAR PROFORMA
     public void AnularProforma(int id, UsuarioDTO ejecutor)
     {
         ejecutor.ValidarAcceso("proformas");
@@ -5595,7 +5522,7 @@ public class ProformaFactory(string connectionString) : MasterDao(connectionStri
         string sql = "UPDATE PROFORMA_ENCABEZADO SET estado = 'Anulada' WHERE id = @id AND estado = 'Pendiente'";
         var pars = new List<SqlParameter> { new SqlParameter("@id", id) };
 
-        if (ejecutor.TienePermiso("sucursal_limit"))
+        if (!ejecutor.TienePermiso("all") && ejecutor.TienePermiso("sucursal_limit"))
         {
             sql += " AND sucursal_id = @sid";
             pars.Add(new SqlParameter("@sid", ejecutor.SucursalId));
@@ -5603,15 +5530,15 @@ public class ProformaFactory(string connectionString) : MasterDao(connectionStri
 
         int filas = ExecuteNonQuery(sql, pars.ToArray(), false);
         if (filas == 0)
-            throw new Exception("No se pudo anular la proforma. Ya no está pendiente o no pertenece a su sucursal.");
+            throw new Exception("No se pudo anular la proforma.");
     }
 
-    // 4. CONSULTAS
     public List<ProformaEncabezadoDTO> ListarProformas(string filtro, UsuarioDTO ejecutor)
     {
         ejecutor.ValidarAcceso("proformas");
 
-        string sql = @"SELECT P.*, ISNULL(C.nombre, 'CLIENTE CONTADO') as ClienteNombre, C.identificacion as ClienteIdentificacion 
+        string sql = @"SELECT P.*, ISNULL(C.nombre, 'CLIENTE CONTADO') as ClienteNombre, 
+                       C.identificacion as ClienteIdentificacion 
                        FROM PROFORMA_ENCABEZADO P
                        LEFT JOIN CLIENTE C ON P.cliente_id = C.id
                        WHERE 1=1";
@@ -5624,7 +5551,7 @@ public class ProformaFactory(string connectionString) : MasterDao(connectionStri
             pars.Add(new SqlParameter("@f", $"%{filtro}%"));
         }
 
-        if (ejecutor.TienePermiso("sucursal_limit"))
+        if (!ejecutor.TienePermiso("all") && ejecutor.TienePermiso("sucursal_limit"))
         {
             sql += " AND P.sucursal_id = @sid";
             pars.Add(new SqlParameter("@sid", ejecutor.SucursalId));
@@ -5642,12 +5569,13 @@ public class ProformaFactory(string connectionString) : MasterDao(connectionStri
     {
         ejecutor.ValidarAcceso("proformas");
 
-        string sql = @"SELECT P.*, ISNULL(C.nombre, 'CLIENTE CONTADO') as ClienteNombre 
+        string sql = @"SELECT P.*, ISNULL(C.nombre, 'CLIENTE CONTADO') as ClienteNombre,
+                       C.identificacion as ClienteIdentificacion 
                        FROM PROFORMA_ENCABEZADO P
                        LEFT JOIN CLIENTE C ON P.cliente_id = C.id
                        WHERE P.id = @id";
 
-        if (ejecutor.TienePermiso("sucursal_limit"))
+        if (!ejecutor.TienePermiso("all") && ejecutor.TienePermiso("sucursal_limit"))
             sql += " AND P.sucursal_id = " + ejecutor.SucursalId;
 
         var dt = ExecuteQuery(sql, new[] { new SqlParameter("@id", id) }, false);
@@ -5661,7 +5589,7 @@ public class ProformaFactory(string connectionString) : MasterDao(connectionStri
     private List<ProformaDetalleDTO> ObtenerDetallesProforma(int proformaId)
     {
         var lista = new List<ProformaDetalleDTO>();
-        string sql = @"SELECT D.*, P.nombre as ProductoNombre 
+        string sql = @"SELECT D.*, P.nombre as ProductoNombre, P.codigo_barras as ProductoCodigo 
                        FROM PROFORMA_DETALLE D 
                        JOIN PRODUCTO P ON D.producto_id = P.id 
                        WHERE D.proforma_id = @id";
@@ -5672,9 +5600,11 @@ public class ProformaFactory(string connectionString) : MasterDao(connectionStri
             lista.Add(new ProformaDetalleDTO
             {
                 ProductoId = (int)r["producto_id"],
+                ProductoCodigo = r["ProductoCodigo"].ToString(),
                 ProductoNombre = r["ProductoNombre"].ToString(),
                 Cantidad = (decimal)r["cantidad"],
                 PrecioUnitario = (decimal)r["precio_unitario"],
+                PorcentajeImpuesto = (decimal)r["porcentaje_impuesto"],
                 ImpuestoTotal = (decimal)r["monto_impuesto"],
                 TotalLineas = (decimal)r["total_linea"]
             });
@@ -5689,6 +5619,7 @@ public class ProformaFactory(string connectionString) : MasterDao(connectionStri
             Id = Convert.ToInt32(r["id"]),
             ClienteId = r["cliente_id"] == DBNull.Value ? 0 : Convert.ToInt32(r["cliente_id"]),
             ClienteNombre = r["ClienteNombre"].ToString(),
+            ClienteIdentificacion = r.Table.Columns.Contains("ClienteIdentificacion") ? r["ClienteIdentificacion"].ToString() : "",
             SucursalId = Convert.ToInt32(r["sucursal_id"]),
             TotalNeto = Convert.ToDecimal(r["total_neto"]),
             TotalImpuesto = Convert.ToDecimal(r["total_impuesto"]),
@@ -5707,54 +5638,53 @@ public class ProformaFactory(string connectionString) : MasterDao(connectionStri
 using IntegraPro.DTO.Models;
 using System.Data;
 using IntegraPro.DataAccess.Dao;
+using System;
+using System.Collections.Generic;
 
 namespace IntegraPro.DataAccess.Factory;
 
-// 1. Heredamos de MasterDao para usar la lógica centralizada
 public class ProveedorFactory(string connectionString) : MasterDao(connectionString)
 {
     public List<ProveedorDTO> ObtenerTodos(UsuarioDTO ejecutor)
     {
-        // Validación de permiso (Rol 4 o Rol 1 suelen tener acceso a proveedores)
-        if (!ejecutor.TienePermiso("proveedores") && !ejecutor.TienePermiso("compras"))
-            return new List<ProveedorDTO>();
+        // SEGURIDAD: Validación directa usando el DTO para evitar dependencia de AppLogic
+        if (!ejecutor.TienePermiso("proveedores"))
+        {
+            throw new UnauthorizedAccessException("No tiene permisos para acceder al módulo de proveedores.");
+        }
 
-        // Usamos ExecuteQuery del MasterDao
-        var dt = ExecuteQuery("SELECT * FROM PROVEEDOR WHERE activo = 1", null, false);
+        // Los proveedores suelen ser globales, no filtramos por sucursal_id
+        string sql = "SELECT * FROM PROVEEDOR WHERE activo = 1";
+
+        var dt = ExecuteQuery(sql, null, false);
         var lista = new List<ProveedorDTO>();
 
-        foreach (DataRow reader in dt.Rows)
+        foreach (DataRow row in dt.Rows)
         {
-            lista.Add(new ProveedorDTO
-            {
-                Id = (int)reader["id"],
-                Identificacion = reader["identificacion"].ToString()!,
-                Nombre = reader["nombre"].ToString()!,
-                Correo = reader["correo"]?.ToString(),
-                Telefono = reader["telefono"]?.ToString(),
-                Activo = (bool)reader["activo"]
-            });
+            lista.Add(MapearProveedor(row));
         }
         return lista;
     }
 
     public void Crear(ProveedorDTO proveedor, UsuarioDTO ejecutor)
     {
-        // 2. VALIDACIÓN DE SEGURIDAD
-        if (!ejecutor.TienePermiso("compras") && !ejecutor.TienePermiso("proveedores"))
-            throw new UnauthorizedAccessException("No tiene permisos para crear proveedores.");
+        // SEGURIDAD: Validación de acceso y escritura
+        if (!ejecutor.TienePermiso("proveedores"))
+            throw new UnauthorizedAccessException("No tiene permisos para el módulo de proveedores.");
 
         if (ejecutor.TienePermiso("solo_lectura"))
-            throw new UnauthorizedAccessException("Cuenta de solo lectura.");
+            throw new UnauthorizedAccessException("Su cuenta es de solo lectura. No puede realizar esta acción.");
 
-        string sql = "INSERT INTO PROVEEDOR (identificacion, nombre, correo, telefono, activo) VALUES (@ide, @nom, @cor, @tel, @act)";
+        // TRAZABILIDAD: Guardamos quién lo creó 
+        string sql = @"INSERT INTO PROVEEDOR (identificacion, nombre, correo, telefono, creado_por, activo) 
+                       VALUES (@ide, @nom, @cor, @tel, @usr, 1)";
 
         SqlParameter[] parameters = {
             new SqlParameter("@ide", proveedor.Identificacion),
             new SqlParameter("@nom", proveedor.Nombre),
             new SqlParameter("@cor", (object?)proveedor.Correo ?? DBNull.Value),
             new SqlParameter("@tel", (object?)proveedor.Telefono ?? DBNull.Value),
-            new SqlParameter("@act", proveedor.Activo)
+            new SqlParameter("@usr", ejecutor.Id) // ID del usuario que registra
         };
 
         ExecuteNonQuery(sql, parameters, false);
@@ -5762,11 +5692,15 @@ public class ProveedorFactory(string connectionString) : MasterDao(connectionStr
 
     public void Actualizar(ProveedorDTO proveedor, UsuarioDTO ejecutor)
     {
-        if (!ejecutor.TienePermiso("compras") || ejecutor.TienePermiso("solo_lectura"))
-            throw new UnauthorizedAccessException("Permisos insuficientes para modificar proveedores.");
+        // SEGURIDAD
+        if (!ejecutor.TienePermiso("proveedores"))
+            throw new UnauthorizedAccessException("No tiene permisos para el módulo de proveedores.");
+
+        if (ejecutor.TienePermiso("solo_lectura"))
+            throw new UnauthorizedAccessException("Su cuenta es de solo lectura.");
 
         string sql = @"UPDATE PROVEEDOR 
-                       SET identificacion = @ide, nombre = @nom, correo = @cor, telefono = @tel, activo = @act 
+                       SET identificacion = @ide, nombre = @nom, correo = @cor, telefono = @tel 
                        WHERE id = @id";
 
         SqlParameter[] parameters = {
@@ -5774,22 +5708,40 @@ public class ProveedorFactory(string connectionString) : MasterDao(connectionStr
             new SqlParameter("@ide", proveedor.Identificacion),
             new SqlParameter("@nom", proveedor.Nombre),
             new SqlParameter("@cor", (object?)proveedor.Correo ?? DBNull.Value),
-            new SqlParameter("@tel", (object?)proveedor.Telefono ?? DBNull.Value),
-            new SqlParameter("@act", proveedor.Activo)
+            new SqlParameter("@tel", (object?)proveedor.Telefono ?? DBNull.Value)
         };
 
-        int filas = ExecuteNonQuery(sql, parameters, false);
-        if (filas == 0) throw new Exception("El proveedor no existe.");
+        int filasAfectadas = ExecuteNonQuery(sql, parameters, false);
+
+        if (filasAfectadas == 0)
+            throw new Exception("No se encontró el proveedor para actualizar.");
     }
 
     public void Eliminar(int id, UsuarioDTO ejecutor)
     {
-        // Solo un administrador o alguien de compras puede "eliminar" (desactivar)
-        if (!ejecutor.TienePermiso("compras") || ejecutor.TienePermiso("solo_lectura"))
-            throw new UnauthorizedAccessException("No tiene autoridad para eliminar proveedores.");
+        // SEGURIDAD
+        if (!ejecutor.TienePermiso("proveedores"))
+            throw new UnauthorizedAccessException("No tiene permisos para el módulo de proveedores.");
 
+        if (ejecutor.TienePermiso("solo_lectura"))
+            throw new UnauthorizedAccessException("Su cuenta es de solo lectura.");
+
+        // Borrado lógico
         string sql = "UPDATE PROVEEDOR SET activo = 0 WHERE id = @id";
         ExecuteNonQuery(sql, [new SqlParameter("@id", id)], false);
+    }
+
+    private ProveedorDTO MapearProveedor(DataRow row)
+    {
+        return new ProveedorDTO
+        {
+            Id = (int)row["id"],
+            Identificacion = row["identificacion"].ToString() ?? string.Empty,
+            Nombre = row["nombre"].ToString() ?? string.Empty,
+            Correo = row["correo"]?.ToString(),
+            Telefono = row["telefono"]?.ToString(),
+            Activo = row["activo"] != DBNull.Value && Convert.ToBoolean(row["activo"])
+        };
     }
 }.
  
@@ -5810,15 +5762,14 @@ public class UsuarioFactory : MasterDao
 {
     private readonly UsuarioMapper _mapper;
 
-    // Ajustado para pasar la cadena de conexión al MasterDao base
     public UsuarioFactory(string connectionString) : base(connectionString)
     {
         _mapper = new UsuarioMapper();
     }
 
     /// <summary>
-    /// Obtiene un usuario y sus permisos. Método exento de validación de ejecutor 
-    /// porque es el punto de entrada para autenticación.
+    /// Obtiene un usuario y sus permisos. Punto de entrada para Auth.
+    /// Exento de validación de ejecutor.
     /// </summary>
     public UsuarioDTO? GetByUsername(string username)
     {
@@ -5826,7 +5777,7 @@ public class UsuarioFactory : MasterDao
             new SqlParameter("@username", username)
         };
 
-        // sp_Usuario_GetByUsername debe retornar: id, rol_id, sucursal_id, nombre_completo, 
+        // sp_Usuario_GetByUsername retorna: id, rol_id, sucursal_id, nombre_completo, 
         // username, password_hash, correo_electronico, activo, nombre_rol, permisos_json
         var table = ExecuteQuery("sp_Usuario_GetByUsername", parameters);
 
@@ -5840,30 +5791,30 @@ public class UsuarioFactory : MasterDao
     /// </summary>
     public void Create(UsuarioDTO nuevoUsuario, UsuarioDTO ejecutor)
     {
+        // SEGURIDAD: Validación directa usando el DTO
         if (!ejecutor.TienePermiso("usuarios"))
             throw new UnauthorizedAccessException("No tiene permisos para gestionar usuarios.");
 
         if (ejecutor.TienePermiso("solo_lectura"))
             throw new UnauthorizedAccessException("Su cuenta está en modo solo lectura.");
 
-        // Si el admin está limitado a su sucursal, forzamos que el nuevo usuario sea de esa sucursal
+        // Lógica de Jurisdicción: Si el admin está limitado a su sucursal
         if (ejecutor.TienePermiso("sucursal_limit"))
         {
             nuevoUsuario.SucursalId = ejecutor.SucursalId;
 
-            // No permitimos que cree roles de mayor jerarquía (asumiendo 1 = Admin Global)
+            // Bloqueo de jerarquía: No puede crear Admins Globales (Rol 1)
             if (nuevoUsuario.RolId == 1)
                 throw new UnauthorizedAccessException("No tiene autoridad para asignar el rol de Administrador Global.");
         }
 
         var parameters = new SqlParameter[] {
-            new SqlParameter("@id", 0),
             new SqlParameter("@rol_id", nuevoUsuario.RolId),
             new SqlParameter("@sucursal_id", nuevoUsuario.SucursalId),
             new SqlParameter("@nombre_completo", nuevoUsuario.NombreCompleto),
             new SqlParameter("@username", nuevoUsuario.Username),
             new SqlParameter("@password_hash", nuevoUsuario.PasswordHash),
-            new SqlParameter("@correo_electronico", nuevoUsuario.CorreoElectronico ?? (object)DBNull.Value),
+            new SqlParameter("@correo_electronico", (object?)nuevoUsuario.CorreoElectronico ?? DBNull.Value),
             new SqlParameter("@activo", nuevoUsuario.Activo)
         };
 
@@ -5871,11 +5822,15 @@ public class UsuarioFactory : MasterDao
     }
 
     /// <summary>
-    /// Lista usuarios. Filtra por sucursal automáticamente según el perfil del ejecutor.
+    /// Lista usuarios filtrando por sucursal automáticamente según el perfil del ejecutor.
     /// </summary>
     public List<UsuarioDTO> GetAll(UsuarioDTO ejecutor)
     {
-        int? sucursalFiltro = ejecutor.TienePermiso("sucursal_limit") ? ejecutor.SucursalId : null;
+        // SEGURIDAD: Solo usuarios autorizados listan usuarios
+        if (!ejecutor.TienePermiso("usuarios"))
+            return new List<UsuarioDTO>();
+
+        bool limitarSucursal = ejecutor.TienePermiso("sucursal_limit");
 
         string sql = @"SELECT u.*, r.nombre_rol, r.permisos_json 
                        FROM USUARIO u 
@@ -5884,10 +5839,10 @@ public class UsuarioFactory : MasterDao
 
         List<SqlParameter> parameters = new List<SqlParameter>();
 
-        if (sucursalFiltro.HasValue)
+        if (limitarSucursal)
         {
             sql += " AND u.sucursal_id = @sucursalId";
-            parameters.Add(new SqlParameter("@sucursalId", sucursalFiltro.Value));
+            parameters.Add(new SqlParameter("@sucursalId", ejecutor.SucursalId));
         }
 
         var table = ExecuteQuery(sql, parameters.ToArray(), false);
@@ -5905,15 +5860,16 @@ public class UsuarioFactory : MasterDao
     }
 
     /// <summary>
-    /// Actualiza el rol verificando que el usuario pertenezca a la sucursal del ejecutor si hay restricciones.
+    /// Actualiza el rol verificando jurisdicción de sucursal.
     /// </summary>
     public void ActualizarRol(int usuarioId, int nuevoRolId, UsuarioDTO ejecutor)
     {
         if (!ejecutor.TienePermiso("usuarios") || ejecutor.TienePermiso("solo_lectura"))
             throw new UnauthorizedAccessException("Permisos insuficientes para modificar roles.");
 
+        // Bloqueo de escalada de privilegios
         if (ejecutor.TienePermiso("sucursal_limit") && nuevoRolId == 1)
-            throw new UnauthorizedAccessException("Jurisdicción insuficiente para asignar administración global.");
+            throw new UnauthorizedAccessException("No puede asignar administración global desde una cuenta limitada por sucursal.");
 
         string sql = "UPDATE USUARIO SET rol_id = @rolId WHERE id = @id";
         var parameters = new List<SqlParameter> {
@@ -5921,6 +5877,7 @@ public class UsuarioFactory : MasterDao
             new SqlParameter("@rolId", nuevoRolId)
         };
 
+        // Forzamos que solo pueda editar usuarios de SU sucursal si tiene el límite
         if (ejecutor.TienePermiso("sucursal_limit"))
         {
             sql += " AND sucursal_id = @sid";
@@ -5930,7 +5887,7 @@ public class UsuarioFactory : MasterDao
         int filas = ExecuteNonQuery(sql, parameters.ToArray(), false);
 
         if (filas == 0)
-            throw new Exception("Operación fallida: El usuario no existe o se encuentra fuera de su sucursal.");
+            throw new Exception("No se pudo actualizar: El usuario no existe o no pertenece a su sucursal.");
     }
 
     public List<RolDTO> GetRoles(UsuarioDTO ejecutor)
@@ -5939,7 +5896,7 @@ public class UsuarioFactory : MasterDao
 
         string sql = "SELECT id, nombre_rol, permisos_json FROM ROL";
 
-        // El admin de sucursal no debe ver/asignar el rol de Admin Global (ID 1)
+        // Un admin de sucursal no debe ver ni asignar el rol de Admin Global (ID 1)
         if (ejecutor.TienePermiso("sucursal_limit"))
             sql += " WHERE id > 1";
 
@@ -5993,8 +5950,8 @@ public class VentaFactory(string connectionString) : MasterDao(connectionString)
 {
     public string CrearFactura(FacturaDTO venta, UsuarioDTO ejecutor)
     {
-        // Seguridad: Forzar sucursal según permisos del ejecutor
-        if (ejecutor.TienePermiso("sucursal_limit"))
+        // Seguridad: Forzar sucursal según permisos del ejecutor (Si no es Admin Total)
+        if (ejecutor.TienePermiso("sucursal_limit") && !ejecutor.TienePermiso("all"))
             venta.SucursalId = ejecutor.SucursalId;
 
         using (var connection = new SqlConnection(connectionString))
@@ -6016,7 +5973,7 @@ public class VentaFactory(string connectionString) : MasterDao(connectionString)
                     decimal acumuladoImpuesto = 0;
                     var detallesProcesados = new List<FacturaDetalleDTO>();
 
-                    // 1. PROCESAR Y CALCULAR CADA LÍNEA DESDE LA DB
+                    // 1. PROCESAR Y CALCULAR CADA LÍNEA DESDE LA DB (Seguridad de Precios)
                     foreach (var item in venta.Detalles)
                     {
                         using (var cmdProd = new SqlCommand("SELECT nombre, costo_actual, porcentaje_impuesto, existencia FROM PRODUCTO WHERE id = @pid", connection, transaction))
@@ -6099,7 +6056,7 @@ public class VentaFactory(string connectionString) : MasterDao(connectionString)
 
                     int facturaId = Convert.ToInt32(ExecuteScalarInTransaction(sqlEnc, pEnc, connection, transaction));
 
-                    // 3. INSERTAR DETALLES Y ACTUALIZAR KARDEX
+                    // 3. INSERTAR DETALLES, ACTUALIZAR STOCK Y KARDEX
                     foreach (var det in detallesProcesados)
                     {
                         string sqlDet = @"INSERT INTO FACTURA_DETALLE 
@@ -6116,16 +6073,25 @@ public class VentaFactory(string connectionString) : MasterDao(connectionString)
                             new SqlParameter("@piva", det.PorcentajeImpuesto)
                         ], connection, transaction);
 
+                        // ACTUALIZACIÓN DE EXISTENCIAS (STOCK)
+                        string sqlUpdateStock = "UPDATE PRODUCTO SET existencia = existencia - @cant WHERE id = @pid";
+                        ExecuteNonQueryInTransaction(sqlUpdateStock, [
+                            new SqlParameter("@cant", det.Cantidad),
+                            new SqlParameter("@pid", det.ProductoId)
+                        ], connection, transaction);
+
+                        // REGISTRO EN KARDEX
                         string sqlKardex = @"INSERT INTO MOVIMIENTO_INVENTARIO 
                                             (producto_id, usuario_id, sucursal_id, fecha, tipo_movimiento, cantidad, documento_referencia, notas) 
-                                            VALUES (@pid, @uid, @sid, GETDATE(), 'SALIDA', @cant, @ref, 'Venta Automática')";
+                                            VALUES (@pid, @uid, @sid, GETDATE(), 'SALIDA', @cant, @ref, @notas)";
 
                         ExecuteNonQueryInTransaction(sqlKardex, [
                             new SqlParameter("@pid", det.ProductoId),
                             new SqlParameter("@uid", ejecutor.Id),
                             new SqlParameter("@sid", venta.SucursalId),
                             new SqlParameter("@cant", det.Cantidad),
-                            new SqlParameter("@ref", consecutivoHacienda)
+                            new SqlParameter("@ref", consecutivoHacienda),
+                            new SqlParameter("@notas", $"Venta Automática - Factura #{facturaId}")
                         ], connection, transaction);
                     }
 
@@ -6161,11 +6127,12 @@ public class VentaFactory(string connectionString) : MasterDao(connectionString)
                       LEFT JOIN CLIENTE c ON f.cliente_id = c.id 
                       WHERE f.id = @id";
 
-        if (ejecutor.TienePermiso("sucursal_limit"))
+        // Filtro de sucursal: Solo si no es Admin Total
+        if (ejecutor.TienePermiso("sucursal_limit") && !ejecutor.TienePermiso("all"))
             sql += " AND f.sucursal_id = @sid";
 
         var p = new List<SqlParameter> { new SqlParameter("@id", id) };
-        if (ejecutor.TienePermiso("sucursal_limit"))
+        if (ejecutor.TienePermiso("sucursal_limit") && !ejecutor.TienePermiso("all"))
             p.Add(new SqlParameter("@sid", ejecutor.SucursalId));
 
         var dt = ExecuteQuery(sql, p.ToArray(), false);
@@ -6221,6 +6188,7 @@ public class VentaFactory(string connectionString) : MasterDao(connectionString)
 
     public DataTable ObtenerReporteVentas(DateTime? desde, DateTime? hasta, int? clienteId, string busqueda, string condicionVenta, UsuarioDTO ejecutor)
     {
+        // Se asume que VW_REPORTE_VENTAS es una vista que une FACTURA_ENCABEZADO con CLIENTE
         string sql = "SELECT * FROM VW_REPORTE_VENTAS WHERE 1=1";
         List<SqlParameter> parametros = new List<SqlParameter>();
 
@@ -6240,8 +6208,10 @@ public class VentaFactory(string connectionString) : MasterDao(connectionString)
             parametros.Add(new SqlParameter("@cId", clienteId.Value));
         }
 
-        // Seguridad de Sucursal
-        if (ejecutor.TienePermiso("sucursal_limit"))
+        // LÓGICA DE SEGURIDAD ACTUALIZADA:
+        // Si el usuario tiene 'all', ve todo.
+        // Si no tiene 'all' pero tiene 'sucursal_limit', se filtra por su sucursal.
+        if (ejecutor.TienePermiso("sucursal_limit") && !ejecutor.TienePermiso("all"))
         {
             sql += " AND sucursal_id = @sId";
             parametros.Add(new SqlParameter("@sId", ejecutor.SucursalId));
@@ -6294,6 +6264,11 @@ public class ProductoMapper : IMapper<ProductoDTO>
         return new ProductoDTO
         {
             Id = Convert.ToInt32(row["id"]),
+            // Agregamos el mapeo de SucursalId para que no salga en 0
+            SucursalId = row.Table.Columns.Contains("sucursal_id") && row["sucursal_id"] != DBNull.Value
+                         ? Convert.ToInt32(row["sucursal_id"])
+                         : 0,
+
             CategoriaId = Convert.ToInt32(row["categoria_id"]),
             CodCabys = row["cod_cabys"]?.ToString(),
             CodigoBarras = row["codigo_barras"]?.ToString(),
@@ -6307,7 +6282,6 @@ public class ProductoMapper : IMapper<ProductoDTO>
             Precio3 = row["precio_3"] != DBNull.Value ? Convert.ToDecimal(row["precio_3"]) : null,
             Precio4 = row["precio_4"] != DBNull.Value ? Convert.ToDecimal(row["precio_4"]) : null,
 
-            // Lógica para capturar existencia local si viene de un JOIN o la general
             Existencia = row.Table.Columns.Contains("existencia_local")
                          ? Convert.ToDecimal(row["existencia_local"])
                          : Convert.ToDecimal(row["existencia"]),
@@ -6315,7 +6289,6 @@ public class ProductoMapper : IMapper<ProductoDTO>
             StockMinimo = Convert.ToDecimal(row["stock_minimo"]),
             ExentoIva = Convert.ToBoolean(row["exento_iva"]),
 
-            // Capturamos el porcentaje de impuesto (según tu SQL)
             PorcentajeImpuesto = row.Table.Columns.Contains("porcentaje_impuesto")
                                  ? Convert.ToDecimal(row["porcentaje_impuesto"])
                                  : 0,
@@ -6323,6 +6296,7 @@ public class ProductoMapper : IMapper<ProductoDTO>
             EsServicio = Convert.ToBoolean(row["es_servicio"]),
             EsElaborado = Convert.ToBoolean(row["es_elaborado"]),
             Activo = Convert.ToBoolean(row["activo"])
+
         };
     }
 
@@ -6448,7 +6422,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("IntegraPro.DataAccess")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+8967fa238cb0db6447bbb1bc5017962648ff59f6")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+4153b5f28a857579dabbc5516649e889b6ddb8bd")]
 [assembly: System.Reflection.AssemblyProductAttribute("IntegraPro.DataAccess")]
 [assembly: System.Reflection.AssemblyTitleAttribute("IntegraPro.DataAccess")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
@@ -6541,6 +6515,8 @@ public class AlertaPagoDTO
     public DateTime FechaVencimiento { get; set; }
     public int DiasParaVencimiento { get; set; }
     public string Urgencia { get; set; } = string.Empty;
+
+    public int SucursalId { get; set; }
 }.
  
 --- RUTA: C:\Users\Luis\source\repos\Integra\IntegraPro\IntegraPro.DTO\Models\CajaDTO.cs --- 
@@ -7147,7 +7123,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("IntegraPro.DTO")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+8967fa238cb0db6447bbb1bc5017962648ff59f6")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+4153b5f28a857579dabbc5516649e889b6ddb8bd")]
 [assembly: System.Reflection.AssemblyProductAttribute("IntegraPro.DTO")]
 [assembly: System.Reflection.AssemblyTitleAttribute("IntegraPro.DTO")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]

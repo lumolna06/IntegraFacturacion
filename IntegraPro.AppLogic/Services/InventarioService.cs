@@ -16,17 +16,19 @@ public class InventarioService(InventarioFactory factory, ProductoFactory produc
     {
         try
         {
-            // SEGURIDAD: Usamos los helpers estandarizados
             ejecutor.ValidarAcceso("inventario");
             ejecutor.ValidarEscritura();
 
             if (mov.Cantidad <= 0)
                 return new ApiResponse<bool>(false, "La cantidad debe ser mayor a cero", false);
 
-            // La lógica de sucursal_limit ya está blindada en el Factory, 
-            // pero mantenerla aquí como pre-validación es buena práctica.
-            if (ejecutor.TienePermiso("sucursal_limit"))
+            // === CORRECCIÓN DE LÓGICA ===
+            // 1. Si NO tiene 'all' Y tiene 'sucursal_limit', lo obligamos a su sede.
+            // 2. Si tiene 'all', ignoramos el 'sucursal_limit' y dejamos que pase el mov.SucursalId del JSON.
+            if (!ejecutor.TienePermiso("all") && ejecutor.TienePermiso("sucursal_limit"))
+            {
                 mov.SucursalId = ejecutor.SucursalId;
+            }
 
             bool ok = _factory.Insertar(mov, ejecutor);
             return new ApiResponse<bool>(ok, ok ? "Movimiento registrado y stock actualizado" : "Error al registrar", ok);

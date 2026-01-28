@@ -2,6 +2,8 @@
 using IntegraPro.DTO.Models;
 using Microsoft.Data.SqlClient;
 using System.Data;
+using System.Collections.Generic;
+using System;
 
 namespace IntegraPro.DataAccess.Factory;
 
@@ -9,7 +11,7 @@ public class CajaFactory(string connectionString) : MasterDao(connectionString)
 {
     public int AbrirCaja(CajaAperturaDTO apertura, UsuarioDTO ejecutor)
     {
-        // 1. SEGURIDAD: Usar los nuevos helpers del DTO
+        // 1. SEGURIDAD: Validar acceso y escritura
         ejecutor.ValidarAcceso("caja");
         ejecutor.ValidarEscritura();
 
@@ -41,7 +43,6 @@ public class CajaFactory(string connectionString) : MasterDao(connectionString)
         var sid = dtInfo.Rows[0]["sucursal_id"];
         var fechaApertura = dtInfo.Rows[0]["fecha_apertura"];
 
-        // Lógica de cálculo original (Intacta)
         string sqlCierre = @"
             DECLARE @ventas decimal(18,2) = (SELECT ISNULL(SUM(total_comprobante),0) FROM FACTURA_ENCABEZADO 
                                             WHERE sucursal_id = @sid AND fecha >= @fecha AND medio_pago = 'Efectivo');
@@ -72,17 +73,23 @@ public class CajaFactory(string connectionString) : MasterDao(connectionString)
 
     public List<object> ObtenerHistorialCierres(UsuarioDTO ejecutor)
     {
-        // 3. SEGURIDAD: Filtrado automático por sucursal usando el DTO
+        // 3. SEGURIDAD: Lógica de prioridad de permisos
+        // Si el usuario tiene el permiso 'all', el filtro permanece vacío y ve todo.
+        string sucursalFilter = "";
+        List<SqlParameter> parametros = new List<SqlParameter>();
+
+        if (!ejecutor.TienePermiso("all") && ejecutor.TienePermiso("sucursal_limit"))
+        {
+            // Ahora que la vista tiene sucursal_id, podemos filtrar sin errores
+            sucursalFilter = " WHERE sucursal_id = @sid";
+            parametros.Add(new SqlParameter("@sid", ejecutor.SucursalId));
+        }
+
         string sql = $@"SELECT * FROM VW_REPORTE_CIERRES_CAJA 
-                        WHERE {ejecutor.GetFiltroSucursal()} 
+                        {sucursalFilter} 
                         ORDER BY fecha_cierre DESC";
 
-        // Al usar GetFiltroSucursal(), el DTO decide si inyecta "sucursal_id = @sid" o "1=1"
-        var p = (ejecutor.RolId != 1)
-                ? new[] { new SqlParameter("@sid", ejecutor.SucursalId) }
-                : null;
-
-        var dt = ExecuteQuery(sql, p, false);
+        var dt = ExecuteQuery(sql, parametros.Count > 0 ? parametros.ToArray() : null, false);
         var lista = new List<object>();
 
         if (dt == null) return lista;
@@ -96,6 +103,9 @@ public class CajaFactory(string connectionString) : MasterDao(connectionString)
                 Cajero = row["cajero"].ToString(),
                 Apertura = row["fecha_apertura"],
                 Cierre = row["fecha_cierre"],
+                MontoInicial = row["monto_inicial"],
+                VentasEfectivo = row["ventas_efectivo"],
+                AbonosEfectivo = row["abonos_efectivo"],
                 Esperado = row["esperado_caja"],
                 Real = row["real_caja"],
                 Diferencia = row["diferencia"],
